@@ -191,12 +191,9 @@ spec:
         # CRS image still consumes SSL_CIPHERS on major image bumps.
         - name: SSL_CIPHERS
           value: "{{ carlos_waf_ssl_ciphers }}"
-        # Pin explicitly (same rationale as SSL_CIPHERS): the CRS image's
-        # default.conf.template renders `server_tokens ${SERVER_TOKENS}` and
-        # nginx-headers.conf deliberately carries no server_tokens directive
-        # (a duplicate hard-fails nginx — verified live). Without this pin
-        # the version-banner suppression rides on the image's OWN env
-        # default, which a future image bump could change silently.
+        # Pin the value because the CRS template renders server_tokens from
+        # this environment variable. nginx-headers.conf omits the directive
+        # because nginx rejects duplicate declarations.
         - name: SERVER_TOKENS
           value: "off"
         - name: SERVER_NAME

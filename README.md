@@ -2,13 +2,19 @@
 <!-- Copyright (C) 2026 CARLOS Contributors -->
 # carlos-podman — CARLOS EMR under podman
 
-> **Status: early access.** carlos-podman is under active development and is
-> currently intended for **testing and development use**. The architecture
-> targets production operation (and the hardening below is real), but the
-> project has not yet completed the validation cycle we require before
-> recommending it for live clinical deployments — do not run it against real
-> patient data (PHI) yet. A step-by-step, verified development/test install
-> is in [QUICKSTART.md](QUICKSTART.md).
+> **Status: alpha.** carlos-podman is new and its interfaces and deployment
+> procedures may change. The repository includes a small sample deployment and
+> the standard Ansible deployment for Ontario and British Columbia. Before any
+> production use, review the architecture, security controls, backup and restore
+> procedures, monitoring, and local regulatory requirements for your site. A
+> guided starting point is available in [QUICKSTART.md](QUICKSTART.md).
+
+**License:** carlos-podman is distributed under the
+[GNU Affero General Public License v3.0](LICENSE), SPDX identifier
+`AGPL-3.0-only`, except for the compatible derived files listed in
+[License](#license). Network use of a modified version may create source-code
+provision obligations under the AGPL; obtain legal advice for your distribution
+and deployment model when needed.
 
 Deployment tooling for the [CARLOS EMR](https://github.com/carlos-emr/carlos)
 (`develop` branch), the fork that succeeds the previous OpenO deployment.
@@ -155,11 +161,10 @@ Files:
 
 ## Quick start
 
-> Looking for a minimal single-host **development/test** install without the
-> Ansible control-node workflow? Use the verified walk-through in
-> [QUICKSTART.md](QUICKSTART.md). The steps below are the full provisioning
-> path (WAF, backups, monitoring, secrets sealing) that a production rollout
-> will use once carlos-podman leaves early access.
+> [QUICKSTART.md](QUICKSTART.md) explains both available paths: a small
+> sample-data pod for evaluation and the standard Ontario or British Columbia
+> deployment. The steps below are the full Ansible workflow, including the WAF,
+> backups, monitoring, and secret sealing.
 
 Provisioning runs from a **control node** (your workstation or a management
 host) with `ansible-core`, `passlib`, and `netaddr` installed plus the
@@ -1896,7 +1901,7 @@ operator-owned file flows `edit the file → carlos-ctl play`.
   the pod units and disables the timers so a reboot leaves everything down;
   `carlos-ctl play` (or `carlos-ctl enable`) reverses both.
 
-### Upgrade notes — 2026-07 hardening pass
+### Upgrade considerations
 
 Behavior changes an existing install should review before/after pulling:
 
@@ -2047,7 +2052,7 @@ order of importance:
    `ALTER TABLE oscar.formRourke2009 ENGINE=InnoDB` fails with
    `ERROR 1005 (errno: 185 "Too many columns")` under every `ROW_FORMAT`
    (DYNAMIC/COMPRESSED/COMPACT/REDUNDANT), and `innodb_page_size` is already
-   at its 32K maximum — all verified live 2026-08-02. Aria is a deliberate
+   at its 32 KiB maximum. Aria is a deliberate
    upstream choice for that form's width.
 
    Because there is no remedy to apply, the engine audit **allows this one

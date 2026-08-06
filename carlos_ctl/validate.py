@@ -62,30 +62,14 @@ def _first_subid_grant(user: str, path: Path) -> Optional[int]:
 
 
 def subid_map_preflight(runner: Runner) -> None:
-    """Warn when the service user's subuid/subgid grant is too NARROW to map
-    every container id this deployment pins.
+    """Warn when subordinate ID grants cannot map required container IDs.
 
-    The Ansible role allocates a 65536-wide range, but it SKIPS the grant
-    entirely when the user already has any line at all (`grep -q "^<user>:"`)
-    — so a service user that arrived with a narrow grant (a pre-existing
-    account, a site allocation, a hand-edited /etc/subuid) keeps it, and
-    nothing downstream ever checks the WIDTH. The failures that follow all
-    point somewhere else:
-
-      - `podman unshare chown 65534:65534 exporter.my.cnf` fails EINVAL, and
-        play's warning sends the operator to look at the file's owner:group
-        and at "the subuid/subgid ranges in /etc/subuid, /etc/subgid" —
-        which do exist, just too narrow (MariaDB metrics silently missing);
-      - `carlos-ctl build` dies deep in the runtime stage, tens of minutes
-        in, with apt's `setgroups 65534 failed - setgroups (22: Invalid
-        argument)` — verified live;
-      - below 10014 the app pod itself cannot start (carlos-init chowns to
-        10001, caddy to 10013).
-
-    Warn rather than refuse: this is measured from host files the CLI does
-    not own, and an emergency `play` must never be blocked by a best-effort
-    probe. The Ansible role asserts the same invariant HARD at provisioning
-    time, where it owns the allocation."""
+    Existing service accounts may have ranges narrower than the 65,536 IDs
+    allocated by the Ansible role. Such ranges prevent image builds and
+    rootless ownership changes for containers that use IDs up to 65,534. This
+    runtime check warns because the CLI does not own the host allocation; the
+    Ansible role enforces the requirement during provisioning.
+    """
     s = runner.settings
     # Overridable only so the hermetic suite can point at fixture files —
     # production always reads /etc (same doctrine as CARLOS_SYSTEMD_DIR).

@@ -209,12 +209,9 @@ def provision_db_accounts(runner: Runner) -> bool:
         )
         return False
 
-    # Collective-atomicity marker (finding 54f): the four credential-store
-    # rewrites below are each atomic, but a hard kill BETWEEN them leaves the
-    # DB on new passwords with a subset of files stale — and nothing recorded
-    # that a converging re-run is needed. Drop a marker before the first
-    # rewrite; clear it after the last. play/db-users refuse to treat a
-    # provisioning as complete while it exists.
+    # Record incomplete provisioning across the separate atomic credential
+    # rewrites. A later run uses this marker to converge files that were not
+    # updated before an interruption.
     incomplete = s.conf_dir / ".db-provision-incomplete"
     with contextlib.suppress(OSError):
         incomplete.parent.mkdir(parents=True, exist_ok=True)
@@ -449,7 +446,7 @@ def maybe_provision_db_users(runner: Runner) -> bool:
     # A surviving marker means a prior provisioning was killed BETWEEN the
     # four credential-store rewrites — the DB may be on new passwords with
     # some files stale. Re-run the idempotent provisioning to converge before
-    # trusting the app's steady state (finding 54f).
+    # trusting the application state.
     if (s.conf_dir / ".db-provision-incomplete").is_file():
         warn(
             "a prior credential provisioning was interrupted mid-rewrite "
@@ -623,15 +620,9 @@ def cmd_db_backup(runner: Runner, args: List[str]) -> int:
 
     s = runner.settings
     runner.require_db_running()
-    # Argument contract BEFORE the credential lookup and the snapshot: this
-    # verb takes at most ONE positional name. It used to read args[0] and drop
-    # everything after it, and the name regex happily accepts a leading dash —
-    # so `carlos-ctl db-backup --help` did not print usage, it took a
-    # multi-GB PLAINTEXT-PHI physical copy of the datadir into a directory
-    # literally named `--help` (verified live), and `db-backup nightly
-    # --some-flag` silently ignored the flag. Same class the CLI's
-    # no-argument-verb guard exists to prevent: a silently-dropped argument on
-    # a verb that writes PHI to disk.
+    # Validate arguments before reading credentials or creating a snapshot.
+    # The optional name becomes a directory below the backup root, so reject
+    # extra arguments and flag-like names.
     if len(args) > 1:
         raise CtlError(
             f"usage: carlos-ctl db-backup [name]  — one optional name, got {len(args)} "
@@ -735,17 +726,11 @@ def cmd_pma(runner: Runner, args: List[str]) -> int:
     # Socket connections authenticate as <user>@localhost. The container
     # needs no podman network at all; the socket dir is mounted rw on purpose
     # — connect(2) on a unix socket fails through a read-only mount.
-    # Hardening flags matching the pod-managed containers (this break-glass
-    # container was previously the one unconfined runtime): drop all caps,
-    # no privilege escalation, and a memory cap. No explicit seccomp flag:
-    # `podman run --security-opt seccomp=` takes a profile PATH or
-    # `unconfined` — `RuntimeDefault` is kube-spec vocabulary and podman run
-    # rejects it ("opening seccomp profile failed: open RuntimeDefault"),
-    # which broke pma on every host (verified live); podman applies its
-    # default seccomp profile to podman-run containers anyway. NOT
-    # --read-only: the phpMyAdmin/nginx image writes sessions + php-fpm
-    # sockets under its own rootfs and won't start read-only without a raft
-    # of tmpfs mounts; loopback-publish + SSH-tunnel remains the isolation.
+    # Match the pod hardening posture with a minimal capability set, disabled
+    # privilege escalation, and a memory limit. Podman applies its default
+    # seccomp profile. The image needs a writable root filesystem for session
+    # and php-fpm state; loopback publishing and the SSH tunnel provide network
+    # isolation.
     if ttl_min > 0:
         log(f"  ttl:     auto-stops after {ttl_min} min (override with --ttl; 0 disables)")
     # --stop-timeout is a stop grace, not a lifetime — bound the lifetime with
@@ -757,21 +742,14 @@ def cmd_pma(runner: Runner, args: List[str]) -> int:
                     f"break-glass phpMyAdmin STARTED on 127.0.0.1:{pma_port} "
                     f"(ttl {ttl_min}m)"], quiet=True)
     run_argv = [
-        # -t only with a REAL terminal, and never -i without one: podman warns
-        # ("the input device is not a TTY") and then ties the panel's lifetime
-        # to a stdin that is already at EOF — a `carlos-ctl pma` started from a
-        # script, a non-tty `ssh host carlos-ctl pma`, or anything piped
-        # through `tee` published the port, printed the tunnel banner, and had
-        # the container torn down seconds later (observed live). Same
-        # isatty gate `db` uses.
+        # Allocate an interactive terminal only when both standard input and
+        # output are terminals. Otherwise Podman would tie the container to an
+        # input stream that may already be closed.
         "run", "--rm",
         *(["-it"] if (sys.stdin.isatty() and sys.stdout.isatty()) else []),
         "--name", f"{s.instance}-pma-ondemand",
-        # Not a bare --cap-drop ALL: the phpmyadmin image is apache-httpd
-        # running as container root, and with an empty capability set its
-        # entrypoint cannot prepare /etc/phpmyadmin nor can httpd bind :80
-        # ("could not bind to address 0.0.0.0:80" — verified live) or drop
-        # to www-data. Grant the minimal apache set and nothing else.
+        # Apache needs these capabilities to prepare its configuration, bind
+        # port 80, and change to the www-data account.
         "--cap-drop", "ALL",
         "--cap-add", "CHOWN,DAC_OVERRIDE,SETGID,SETUID,NET_BIND_SERVICE",
         "--security-opt", "no-new-privileges",

@@ -509,25 +509,14 @@ spec:
     # so this container just starts Tomcat. tini is PID 1 (reaps/forwards signals).
     - name: drugref
       image: "{{ carlos_drugref_image }}"
-      # Bounded wait-for-db BEFORE Tomcat — the SAME gate the carlos container
-      # carries (finding S14), and for a sharper reason: DrugRef's Spring
-      # context builds its Hibernate SessionFactory at CONTEXT START and NEVER
-      # RETRIES. A `drugref2` database that is missing (a fresh install loads
-      # it after `play`, per the README) or a MariaDB not yet accepting
-      # connections (a reboot where the db is slower than this container)
-      # therefore kills /drugref2 permanently: Tomcat stays up serving 404 for
-      # every request, the pod's 404-rejecting probes never green, and
-      # `carlos-ctl play` fails its readiness gate with NO .deployed marker and
-      # NO timers armed — while a plain restart of this one container fixes it.
-      # Measured live: context init died with "Unknown database 'drugref2'",
-      # /drugref2/ 404'd for 15 minutes, and a `podman restart` of just this
-      # container returned 200 immediately once the database existed.
-      # Same shape as the carlos loop: creds from the ASSEMBLED properties (the
-      # sed halves the java-properties-escaped backslashes), password off-argv
-      # via MYSQL_PWD, up to 600s, then ALWAYS exec catalina — the wait can
-      # delay Tomcat, never prevent it. Deliberately NOT an initContainer:
-      # initContainers must all exit before ANY app container starts, so
-      # waiting on the db there would deadlock (see the carlos loop).
+      # Wait up to 600 seconds for the drugref2 database before starting
+      # Tomcat. DrugRef creates its Hibernate SessionFactory only during
+      # context startup, so starting before MariaDB accepts connections or
+      # before the schema exists leaves the context unavailable. Credentials
+      # come from the assembled properties file; MYSQL_PWD keeps the password
+      # out of command arguments. This must remain a container command rather
+      # than an initContainer because all init containers finish before the
+      # database container starts.
       command: ["/usr/bin/tini", "--", "bash", "-c", "P=/run/drugref-config/drugref2.properties; u=$(grep -m1 '^db_user=' \"$P\" | cut -d= -f2-); export MYSQL_PWD=\"$(grep '^db_password=' \"$P\" | tail -1 | cut -d= -f2- | sed 's/\\\\\\\\/\\\\/g')\"; ok=0; for i in $(seq 1 120); do mariadb -u\"${u:-root}\" -h 127.0.0.1 drugref2 -e 'SELECT 1' >/dev/null 2>&1 && { ok=1; break; }; sleep 5; done; unset MYSQL_PWD; [ \"$ok\" = 1 ] || echo 'WARN: drugref2 DB not queryable after 600s — starting Tomcat anyway (the /drugref2 context will fail and the probes will catch it)' >&2; exec catalina.sh run"]
       # Fully non-root: runAsNonRoot + drop ALL capabilities with no add-backs
       # (the root-only work moved to drugref-init). runAsUser must match the
@@ -556,31 +545,22 @@ spec:
         limits:
           memory: "{{ carlos_drugref_mem_limit }}"
           cpu: "{{ carlos_drugref_cpu_limit }}"
-      # HTTP-over-/dev/tcp probe (no curl/wget dependency in the image).
-      # 2xx/3xx ONLY (finding S7): the old [234] pattern also accepted 404,
-      # so a drugref WAR that FAILED to deploy (Tomcat serves 404s forever)
-      # read "healthy", wait_app_ready passed, and the deploy went green with
-      # drug-interaction checking silently down. The context root must
-      # actually answer — a redirect (3xx) counts, a 404/5xx does not.
+      # Probe over /dev/tcp because the image does not include curl or wget.
+      # Accept only 2xx and 3xx responses; a 404 means the DrugRef context did
+      # not deploy and must not be treated as healthy.
       livenessProbe:
         exec:
           command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8180; printf 'GET /drugref2/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3; head -n1 <&3 | grep -qE '^HTTP/1\\.[01] [23]'"]
         initialDelaySeconds: 120
         periodSeconds: 30
         timeoutSeconds: 10
-        # 20, not a tighter steady-state value (review finding): on podman
-        # builds that IGNORE startupProbe, liveness is the only first-boot
-        # gate — 120s + 20x30s ≈ 720s preserves the historical grace a large
-        # DrugRef DB load needs there. On builds that honor startupProbe,
-        # first boot is its 1200s; a steady-state hang still trips liveness
-        # in ~10 min, and the 15-min monitor sweep backstops it.
+        # Retain enough first-start grace for Podman versions that do not map
+        # startupProbe. Versions that support it use the separate 1,200-second
+        # startup budget below.
         failureThreshold: 20
-      # First-boot grace lives here, not in liveness: a large DrugRef DB
-      # load / index rebuild can 404 for many minutes before the WAR answers.
-      # 80 x 15s = 1200s — strictly MORE grace than the old liveness-only
-      # budget (~720s), while a WAR that never deploys still fails the pod
-      # instead of reading healthy forever. (podman versions that ignore
-      # startupProbe fall back to liveness initialDelaySeconds: 120.)
+      # Allow up to 1,200 seconds for the initial DrugRef schema load or index
+      # rebuild. Podman versions that do not map startupProbe use the liveness
+      # probe's initial delay and failure threshold instead.
       startupProbe:
         exec:
           command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8180; printf 'GET /drugref2/ HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3; head -n1 <&3 | grep -qE '^HTTP/1\\.[01] [23]'"]
@@ -657,25 +637,13 @@ spec:
     # tini is PID 1 (reaps orphans, forwards podman's SIGTERM for graceful stop).
     - name: carlos
       image: "{{ carlos_image }}"
-      # Bounded wait-for-db BEFORE Tomcat (finding S14): kube play offers no
-      # in-pod startup ordering (readinessProbe is ignored, and an
-      # initContainer CANNOT express this — initContainers must all exit
-      # before ANY app container starts, so waiting on the db there would
-      # DEADLOCK; do not "fix" this back into an initContainer). The loop waits
-      # for the `oscar` DATABASE to be queryable (not just TCP 3306), so a fresh
-      # install whose schema is loaded after `play` does not hard-fail Tomcat's
-      # context on 'Unknown database'. Creds come from the assembled
-      # carlos.properties (last-wins) and the password rides MYSQL_PWD
-      # (off-argv). Up to 600s (120 x 5s — under the db's own 1200s startupProbe
-      # budget on purpose: a first-boot auto-upgrade may legitimately exceed
-      # it), then ALWAYS execs catalina — it can delay Tomcat, never prevent it
-      # (a dead DB is the liveness probe's job). The sed halves doubled
-      # backslashes: the renderer writes the java-properties-ESCAPED value
-      # (\ -> \\), and reading it raw made this loop auth-fail for
-      # backslash-bearing passwords — every pod start then stalled the full
-      # 600s before Tomcat came up (verified live 2026-08-01). tini stays
-      # PID 1; exec keeps catalina the direct child so podman's SIGTERM
-      # still reaches it.
+      # Wait up to 600 seconds for the oscar database before starting Tomcat.
+      # The schema is loaded after the first play on a new installation, and
+      # Podman does not provide container startup ordering within the pod.
+      # Credentials come from the assembled properties file; MYSQL_PWD keeps
+      # the password out of command arguments. Decode Java-properties
+      # backslash escaping before connecting. After the bounded wait, start
+      # Tomcat so the liveness probe can report an unavailable database.
       command: ["/usr/bin/tini", "--", "bash", "-c", "P=/run/carlos-config/carlos.properties; u=$(grep -m1 '^db_username=' \"$P\" | cut -d= -f2-); export MYSQL_PWD=\"$(grep '^db_password=' \"$P\" | tail -1 | cut -d= -f2- | sed 's/\\\\\\\\/\\\\/g')\"; ok=0; for i in $(seq 1 120); do mariadb -u\"${u:-root}\" -h 127.0.0.1 oscar -e 'SELECT 1' >/dev/null 2>&1 && { ok=1; break; }; sleep 5; done; unset MYSQL_PWD; [ \"$ok\" = 1 ] || echo 'WARN: oscar DB not queryable after 600s — starting Tomcat anyway (liveness will catch a dead DB)' >&2; exec catalina.sh run"]
       # Fully non-root: runAsNonRoot + drop ALL capabilities with no add-backs
       # (the root-only work moved to carlos-init). runAsUser must match the image

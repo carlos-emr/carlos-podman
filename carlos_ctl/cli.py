@@ -145,17 +145,9 @@ def _acquire_ctl_lock(settings: Settings) -> None:
 
 
 def _target_banner(settings: Settings) -> None:
-    # STDERR, not stdout: this is operator context, and `db` — which carries
-    # the banner because imports touch data — is ALSO the documented scripting
-    # idiom. On stdout the banner became the FIRST LINE of every captured or
-    # piped result, so the README's own DrugRef remedy
-    #     carlos-ctl db -N -B -e "SELECT CONCAT('ALTER TABLE …')" | carlos-ctl db drugref2
-    # fed `==> target: instance=…` to mariadb and died with
-    #     ERROR 1064 (42000) at line 1 … near '==> target: instance=carlos …'
-    # leaving all 17 drugref2 tables Aria — which is exactly the state that
-    # makes `backup full` refuse the nightly dump. Verified live. `db-dump`
-    # already gets no banner for the same reason; stderr keeps the
-    # wrong-instance guard for humans without corrupting the data stream.
+    # Write operator context to stderr so stdout remains safe for SQL pipelines
+    # and captured query results. ``db-dump`` omits the banner for the same
+    # reason.
     print(
         f"==> target: instance={settings.instance}  EMR_HOME={settings.emr_home}  "
         f"env={settings.env_file}",

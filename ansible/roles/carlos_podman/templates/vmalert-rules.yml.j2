@@ -77,10 +77,8 @@ groups:
             running but not shipping; the WAF PHI audit trail is silently NOT
             being persisted
 
-      # Pre-OOM lead time (finding 50): the JVM heap-dump check only fires
-      # POST-MORTEM, and a mariadbd cgroup OOM kill had no signal at all.
-      # MemAvailable is the kernel's own reclaimable estimate; 8% for 10m on
-      # a dedicated EMR host means the next big report/upgrade likely OOMs.
+      # Warn before memory exhaustion. MemAvailable is the kernel's estimate
+      # of reclaimable memory; the default threshold is 8% for 10 minutes.
       - alert: MemoryLowHost
         expr: >-
           100 * node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes

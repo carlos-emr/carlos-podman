@@ -131,7 +131,7 @@ def cmd_alert(runner: Runner, args: List[str]) -> int:
     subject = args[0] if args else "unspecified"
     # JOIN the remaining words, don't take args[1] alone: an unquoted detail
     # ("carlos-ctl alert backup db is down") delivered the page as "backup — db"
-    # and silently dropped the rest — verified live against a real webhook.
+    # and silently dropped the rest against a real webhook.
     # Deliberately NOT the db-backup-style refusal: this is the paging path, and
     # refusing a malformed invocation means the page does not go out AT ALL,
     # which is strictly worse than delivering it. Reassembling matches what the

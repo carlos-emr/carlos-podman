@@ -155,10 +155,7 @@ def _sha256_file(path: Path) -> str:
 def cert_restart_marker(runner: Runner) -> Path:
     """Marker recording that a renewed cert is INSTALLED on disk but a
     consumer pod restart FAILED — the WAF/log view keep serving the OLD cert
-    until they restart (finding S11: the old code warned, returned 0 so
-    OnFailure never paged, and every later daily run hit the 'not due'
-    early-return — a self-concealing front-door TLS outage that only
-    surfaced at expiry). cmd_cert_renew retries the restarts and clears the
+    until they restart. cmd_cert_renew retries the restarts and clears the
     marker on its next run even when the cert is not due; the monitor nags
     while the marker persists."""
     return runner.settings.conf_dir / "waf" / ".cert-restart-needed"
@@ -255,7 +252,7 @@ def cmd_cert_renew(runner: Runner) -> int:
         if marker.is_file():
             # A prior run installed this cert but could not restart the
             # consumers — the cert being "not due" must NOT skip the retry,
-            # or the old cert is served until it expires (finding S11).
+            # or the old cert is served until it expires.
             log("cert-renew: certificate not due, but a previous run could not "
                 "restart the consumers — retrying the pod restarts (the renewed "
                 "cert is already on disk)")
@@ -298,7 +295,7 @@ def cmd_cert_renew(runner: Runner) -> int:
     os.replace(new_chain, certs / "fullchain.pem")
     _chown_service_user(runner, certs / "fullchain.pem", certs / "privkey.pem")
     # Restart ONLY the two cert consumers; the app pod is untouched. A failed
-    # restart must be LOUD (finding S11): write the retry marker and exit
+    # restart must be LOUD: write the retry marker and exit
     # nonzero so the unit's OnFailure pages — warning and returning 0 left
     # the old cert in service, invisibly, until it expired.
     failed = _restart_cert_consumers(runner)

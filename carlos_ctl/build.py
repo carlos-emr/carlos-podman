@@ -167,7 +167,7 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
                 "DrugRef tarball's sha256"
             )
         # The Containerfiles' SOURCE_DATE_EPOCH plumbing is inert unless a
-        # value is actually passed (finding C25) — a release build claiming
+        # value is actually passed — a release build claiming
         # auditability must pin its build timestamp too, or two "identical"
         # release builds diverge on embedded times.
         if not s.get("SOURCE_DATE_EPOCH"):
@@ -263,7 +263,7 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         # Never leave the operator CA staged in the context after the build.
         if extra_ca:
             ca_ctx.write_text("")
-    # Post-build smoke BEFORE any tag moves (finding C25): a bare `build`
+    # Post-build smoke BEFORE any tag moves: a bare `build`
     # used to promote :latest with nothing verifying the image even runs or
     # carries its exploded WAR — only `rebuild` (via play readiness) caught a
     # broken image, after the outage. One `podman run --entrypoint test`

@@ -1,20 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-"""play / down / enable / check — pod lifecycle with the go-live gates.
+"""Pod lifecycle commands and go-live validation gates.
 
-NAMING NOTE: the "2" is NOT a v2/rewrite — it's a size split. THIS module holds
-the real lifecycle mutators (play/down/enable/check + their gates); the
-read-only host-status verbs (status/logs/instances) live in `lifecycle.py`, and
-build/rebuild/rollback live in `build.py`. When editing "the lifecycle", it is
-almost always THIS file. (A rename to intent-revealing module names is tracked
-but deferred — it churns every import and test reference.)
-
-`play` no longer renders: the Ansible role renders the pod YAMLs (and every
-other config) at provisioning time. play VALIDATES the rendered artifacts
-(exist, token-free, sane margins) and starts the pods — so config changes
-flow: edit host_vars -> ansible-playbook -> carlos-ctl play. Every go-live
-gate from the bash is preserved verbatim; each exists because its failure
-mode was observed or is catastrophic for a PHI system."""
+This module contains mutating lifecycle operations such as ``play``, ``down``,
+``enable``, and ``check``. Read-only status operations live in
+:mod:`carlos_ctl.lifecycle`, while image lifecycle operations live in
+:mod:`carlos_ctl.build`. Ansible renders deployment artifacts; these commands
+validate and apply those artifacts at runtime.
+"""
 
 from __future__ import annotations
 
@@ -365,7 +358,7 @@ def _pull_images(runner: Runner, yamls: List[Path]) -> None:
 # Lockstep with the probe commands in carlos-app.yaml.j2 / carlos-waf.yaml.j2
 # (keep in sync when a probe there changes): when podman never wired the pod
 # spec's livenessProbe into a healthcheck, the readiness gate execs the SAME
-# probe directly instead of trusting "started" (finding S15). Keyed by the
+# probe directly instead of trusting "started". Keyed by the
 # container-name suffix after the pod prefix.
 _FALLBACK_PROBES: Dict[str, List[str]] = {
     "db": [
@@ -399,34 +392,16 @@ def _wait_container_healthy(
     runner: Runner, ctr: str, deadline: float,
     fallback_probe: Optional[List[str]] = None,
 ) -> bool:
-    """Poll podman's health verdict for ONE container until healthy or the
-    deadline. An empty/<nil> status only passes after confirming NO
-    healthcheck is CONFIGURED (.Config.Healthcheck) — kube play wires every
-    pod livenessProbe into a podman healthcheck, so a configured-but-not-
-    yet-reported check (starting, or a runtime that never populated
-    .State.Health) must keep polling rather than false-green the gate. An
-    inspect ERROR also keeps polling (a container mid-recreate must not
-    false-green). With no healthcheck configured at all (a podman build that
-    never mapped the probe), the gate execs `fallback_probe` in-container —
-    the same command the pod spec declares — and only greens on its success
-    (finding S15: the old behavior trusted 'started', so `play` could arm
-    timers and markers with nothing confirming the app actually serves).
-    Containers without a mapped fallback keep the warn-and-trust-started
-    compatibility path. Returns False on deadline.
+    """Wait for a container healthcheck or fallback probe to succeed.
 
-    A THIRD shape exists and used to burn the whole budget: the healthcheck is
-    configured but NEVER EXECUTES, so the status sits at 'starting' with an
-    empty .State.Health.Log forever. podman drives healthchecks from transient
-    systemd timers, so anything that stops those timers being created (a
-    service user with no working user manager, a degraded/containerized host)
-    produces exactly this — `play` then polled for the full per-container
-    budget and reported "the app is not serving" about a stack that was
-    serving fine. Measured live: db health `{"Status":"starting","Log":null}`
-    indefinitely while the container's own declared probe returned 0
-    immediately. After _NEVER_RAN_GRACE seconds of an empty log we fall back
-    to exec'ing the declared probe — the same fail-closed command used when no
-    healthcheck is configured at all, so nothing is greened without a passing
-    probe."""
+    Empty and ``starting`` health states continue polling while Podman reports
+    a configured healthcheck. If no healthcheck is configured, execute the
+    supplied fallback probe inside the container. Some Podman environments
+    configure healthchecks without scheduling them; after
+    ``_NEVER_RAN_GRACE`` seconds with an empty health log, execute the same
+    fallback probe. Return ``False`` when the deadline expires or no supported
+    probe can establish health.
+    """
     import time
 
     warned_fallback = False
@@ -481,7 +456,7 @@ def _wait_container_healthy(
                             f"directly in the container; consider a newer podman."
                         )
                         warned_fallback = True
-                    # timeout=15 like the inspects above (review finding): the
+                    # timeout=15 like the inspects above : the
                     # probe bodies block indefinitely against a socket that
                     # accepts but never answers (JVM in GC death), and podman
                     # exec itself can wedge on exactly the degraded builds
@@ -529,25 +504,14 @@ def _wait_container_healthy(
 
 
 def ready_budgets(runner: Runner) -> Dict[str, int]:
-    """Per-container readiness budgets (seconds), keyed by container name.
+    """Return the readiness timeout for each required container.
 
-    Sized to each container's OWN startup allowance in carlos-app.yaml.j2
-    (finding S13): db and drugref carry 80x15s = 1200s startupProbes (first
-    boot MARIADB_AUTO_UPGRADE / DrugRef DB load), and carlos — whose command
-    now SERIALIZES behind the db (up to 600s of wait-for-db before catalina
-    even starts, finding S14) — gets the same 1320s as the db: its
-    healthy-time is db-ready-time + Tomcat boot, so budgeting it below the
-    db's own allowance re-created the exact false-failure S13 fixed. The waf
-    needs only TLS/init headroom. The old single shared 900s budget
-    under-funded a legitimate slow first boot: `play` then exited 1 with NO
-    .deployed marker and NO timers armed — a live, PHI-serving stack with
-    backups and monitoring silently disarmed, and an operator told to roll
-    back a good build.
-
-    An EXPLICIT READY_WAIT_SECONDS overrides every budget in either
-    direction — raising it lengthens every gate; the hermetic suite lowers
-    it to 0 for instant timeouts. maybe_provision_db_users' db-readiness
-    wait defaults to the same 1320s — keep them aligned."""
+    Database, CARLOS, and DrugRef receive 1,320 seconds to cover their
+    1,200-second startup probes and dependent startup work. The WAF receives
+    420 seconds for TLS and initialization. ``READY_WAIT_SECONDS`` overrides
+    every default, and the database-user provisioning wait uses the same
+    database allowance.
+    """
     s = runner.settings
     containers = (
         f"{s.app_pod}-db",
@@ -574,7 +538,7 @@ def wait_app_ready(runner: Runner) -> bool:
     (healthcheck.sh/mariadb-admin), so "port open but server not answering"
     no longer passes.
 
-    Budgets are PER CONTAINER (see ready_budgets — finding S13). Deadlines are
+    Budgets are PER CONTAINER (see ready_budgets — the declared startup probes). Deadlines are
     absolute from one t0 because the containers start CONCURRENTLY: a
     container that took 900 s of the db's budget to become healthy really has
     had 900 s, so the next one should not get a fresh full budget on top.
@@ -644,9 +608,7 @@ def waf_db_isolation_broken(runner: Runner) -> Optional[bool]:
     the app pod's 3306? True = BROKEN (the edge can reach the PHI database),
     False = isolated, None = cannot probe (waf container not running). The
     split-pod topology's entire security argument rests on this boundary, so
-    it is asserted by `check`/`play` AND re-checked by the recurring monitor
-    (finding S21c: a hand-edited bind_address plus a reboot — which bypasses
-    play's gates — previously went undetected until the next manual check)."""
+    it is asserted by `check`/`play` AND re-checked by the recurring monitor."""
     s = runner.settings
     names = runner.output(runner.podman_user_argv(["ps", "--format", "{{.Names}}"]))
     if f"{s.waf_pod}-waf" not in names.splitlines():
@@ -668,7 +630,7 @@ def waf_db_isolation_broken(runner: Runner) -> Optional[bool]:
     # bash or timeout missing from a rebased WAF image, container
     # mid-restart. Mapping that to "isolated" would fail OPEN: the boundary
     # would read intact forever while the probe silently stopped probing
-    # (review finding). None = cannot verify; callers surface it.
+    # . None = cannot verify; callers surface it.
     return None
 
 
@@ -1068,7 +1030,7 @@ def cmd_play(runner: Runner, args: List[str]) -> int:
     # A healthy deploy just (re)started both cert consumers with whatever is
     # staged in conf/waf/certs — a pending cert-restart retry marker is now
     # satisfied. Clearing it here stops the monitor nagging for up to a day
-    # after the operator already remediated via play (review finding).
+    # after the operator already remediated via play .
     from .tlsops import cert_restart_marker
 
     with contextlib.suppress(OSError):
@@ -1190,7 +1152,7 @@ def cmd_down(runner: Runner, args: List[str]) -> int:
                     # Mirror the systemd branch's is-active recheck: `pod
                     # stop` exits nonzero for post-stop cleanup errors too
                     # (cgroup teardown), with every container already down —
-                    # verified live (rc 125, pod state Exited). Only count a
+                    # A stop may return rc 125 after all containers have exited. Count a
                     # failure when the pod is NOT affirmatively stopped; an
                     # unknown/errored state stays a failure (fail-safe: this
                     # rc gates `down && umount` maintenance scripting).
@@ -1218,8 +1180,8 @@ def cmd_enable(runner: Runner) -> int:
         raise CtlError("no usable systemd on this host — nothing is masked")
     # rc-checked: this verb is the recovery path from `down --disable` — a
     # swallowed systemctl failure (broken user manager, wrong SERVICE_USER)
-    # previously printed the success line while the pods STAYED masked, and
-    # the EMR silently did not come back at the next boot.
+    # Verify unmasking before reporting success; masked pods cannot start at
+    # the next boot.
     failed: List[str] = []
     if runner.systemctl_user(
         ["unmask", f"{s.waf_pod}.service", f"{s.instance}.service", f"{s.obs_pod}.service"],
@@ -1294,12 +1256,12 @@ def runtime_version_ok(
 
 
 def cmd_check(runner: Runner) -> int:
-    """Live post-deploy validation (read-only). The bash version also
-    re-verified every pod-spec field (runAsNonRoot, readOnlyRootFilesystem per
-    container); per the migration review those spec-restating sweeps were
-    trimmed — the specs declare them and podman enforces them — keeping the
-    checks that probe REAL runtime behavior: cross-pod reachability, the
-    isolation boundaries, the pipelines, the front door, and host posture."""
+    """Run read-only post-deployment validation.
+
+    The checks cover runtime behavior that static manifests cannot establish,
+    including cross-pod reachability, network isolation, telemetry pipelines,
+    the front door, and host security posture.
+    """
     from . import obsquery
     from .obsquery import vl_query, vm_scalar
 
@@ -1464,9 +1426,8 @@ def cmd_check(runner: Runner) -> int:
                 "would be invisible here; check 'carlos-ctl logs db' by hand"
             )
 
-    # The drugref side of the same boundary (finding S9): play's preflight
-    # warns, but check previously never looked — a drugref left on the DB
-    # root account is the same whole-instance blast radius.
+    # Apply the same boundary check to DrugRef. Using the database root account
+    # gives that service privileges across the entire instance.
     if s.drugref_properties_file.is_file():
         from .util import first_match
 
@@ -1555,7 +1516,7 @@ def cmd_check(runner: Runner) -> int:
         # (b) the waf must NOT reach MariaDB — bind_address=127.0.0.1 keeps
         # 3306 off the app pod's network interfaces (connect must fail).
         # Shared probe: the recurring monitor re-asserts the same boundary
-        # (finding S21c) so a drift between plays is caught within a sweep.
+        # so a drift between plays is caught within a sweep.
         isolation = waf_db_isolation_broken(runner)
         if isolation is True:
             bad(

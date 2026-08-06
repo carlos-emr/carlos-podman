@@ -325,14 +325,10 @@ def chown_to_service_user(path: Path, user: str) -> bool:
     """Hand `path` to the service user — BOTH uid AND gid. Returns False when
     the user does not exist or the chown fails (callers warn; never raises).
 
-    The gid is NOT optional, and `os.chown(p, uid, -1)` is a trap here: the
-    files this is used on are handed on to a rootless `podman unshare chown`
-    that maps them to an in-container uid. Host root's uid/gid 0 are NOT in
-    the service user's userns id_map (only its own uid/gid plus its
-    subuid/subgid ranges are), and chown(2) refuses to touch a file whose
-    CURRENT owner or group is unmapped. A root-written file left group-root
-    therefore makes every subsequent `podman unshare chown` fail with EPERM
-    — verified live: `carlos:root` -> EPERM, `carlos:carlos` -> ok."""
+    Both the user and group must change. Files are subsequently passed to
+    ``podman unshare chown``; host root IDs are outside the service user's
+    namespace mapping and cause that operation to fail with ``EPERM``.
+    """
     try:
         import pwd
 

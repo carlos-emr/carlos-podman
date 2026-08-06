@@ -1,31 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-"""Health monitor (`carlos-ctl monitor`, run by <instance>-monitor.timer).
+"""Health monitoring for the ``carlos-ctl monitor`` command.
 
-Division of labor after the vmalert migration:
-  - vmalert (obs pod) continuously evaluates the METRIC-DERIVED rules the
-    bash monitor used to re-derive by polling the VictoriaMetrics API every
-    hour: mysql_up != 1, scrape targets down/absent, disk free (via
-    node_filesystem_avail_bytes), and log-ingestion staleness. This verb
-    POLLS vmalert's /api/v1/alerts and dispatches anything firing through
-    the alert path. DETECTION latency is vmalert's evaluation interval
-    (seconds); PAGING latency is bounded by THIS timer's cadence
-    (MONITOR_ONCALENDAR, default every 15 min) — vmalert itself notifies
-    nobody (-notifier.blackhole).
-  - this verb keeps everything that has NO metric equivalent (backup
-    stampfile freshness, served-vs-file TLS expiry, dead-man heartbeat,
-    sealed-secrets unit health, heap-dump presence, the rootless
-    user-unit -> system-alert bridge) AND the cheap LOCAL container
-    presence/unhealthy/crash-loop/DB-liveness sweep: podman state is not
-    scraped into VictoriaMetrics, and the sweep deliberately has no store
-    dependency (it must still work while the obs pod itself is down).
-  - when the obs pod is disabled (OBS_ENABLED=0) there is no vmalert, so
-    the sweep is the only liveness signal — same checks, no store polling.
-
-Alert dedup/re-remind throttling: a PERSISTENT condition delivers off-box at
-most once per ALERT_REMIND_HOURS (a stuck container must not flood the
-channel operators depend on — that trains them to mute it); recovery clears
-its state so the NEXT occurrence pages immediately again."""
+The monitor relays metric-derived alerts from vmalert and performs local checks
+that do not have metric equivalents, including backup freshness, certificate
+expiry, container health, database liveness, and systemd unit state. Alerts are
+throttled by stable condition keys and become immediately eligible again after
+recovery.
+"""
 
 from __future__ import annotations
 
@@ -54,20 +36,15 @@ class MonitorRun:
         self.remind_hours = self.s.get_int_or("ALERT_REMIND_HOURS", 24)
 
     def alert(self, msg: str, key: str = "", remind_hours: Optional[int] = None) -> None:
-        """Dispatch one failed check, throttled per stable key: a condition
-        already paged within the reminder window goes to the journal only
-        (self.fail stays set, so the exit code / heartbeat still show it).
-        `remind_hours` overrides the global window per key — long-lived,
-        consciously-acked postures (e.g. the no-heartbeat nag) remind weekly
-        instead of daily so the ack doesn't train channel-muting."""
+        """Dispatch a failed check, subject to per-condition throttling.
+
+        A condition reported within its reminder window is written to the
+        journal without another external notification. ``remind_hours`` can
+        override the global interval for an individual condition.
+        """
         self.fail = True
-        # ALWAYS surface the finding on stderr. `monitor` is an operator verb
-        # ("run the health checks now" in the CLI usage), but every finding
-        # used to go only to journald + the alert channel — a hand-run sweep
-        # printed NOTHING and exited 1, so the operator had to go read
-        # journalctl to learn what failed. `check` prints its FAILs; so does
-        # this now. Timer runs are unaffected: systemd captures stderr into
-        # the same journal the logger call already writes to.
+        # Print every failure for interactive invocations. Timer-driven runs
+        # capture the same output in the system journal.
         import sys as _sys
 
         print(f"FAIL {msg}", file=_sys.stderr)
@@ -366,7 +343,7 @@ def _check_liveness(m: MonitorRun) -> None:
         for rcc in rc_containers:
             if rcc not in running:
                 continue
-            # Id + RestartCount together (pass-8 N2): RestartCount alone is
+            # Id + RestartCount together: RestartCount alone is
             # blind to a crash-loop that manifests as whole-POD recreation —
             # fresh containers return at RestartCount=0, so the rising-count
             # compare never fires and the baseline was silently rewritten.
@@ -673,22 +650,14 @@ def _check_vmalert(m: MonitorRun) -> None:
 
 
 def _check_waf_5xx(m: MonitorRun) -> None:
-    """The 'up but serving 500s' blind spot: the carlos liveness probe only
-    checks /carlos/ (which 302s to login even when authenticated routes are
-    broken), so a DB-pool exhaustion or bad deploy returning 500 to every
-    authenticated request keeps the pod 'healthy' and pages nobody. Metrics
-    don't cover it (no app/WAF scrape target), so count 5xx responses in the
-    WAF access-log stream (already in VictoriaLogs) over a window. Best-effort
-    and format-dependent (nginx combined log: the status follows the request's
-    closing quote); an unreachable store is silent (the store-down path
-    already pages). The old KNOWN LIMITATION — a log-format/stream-label
-    drift makes the regex match nothing and the check reads a silent 0
-    forever — is closed by the companion stream-silence assertion below
-    (finding S8): the monitor's own front-door curl hits the WAF every
-    sweep, so a deployed instance is GUARANTEED waf-access traffic and a
-    match-all zero over an hour means the surveillance is blind, not that
-    the clinic is idle. If you change the WAF log format, update the 5xx
-    regex here in the same commit."""
+    """Detect sustained HTTP 5xx responses in the WAF access-log stream.
+
+    The application liveness probe covers the login redirect but not
+    authenticated routes, so it cannot detect every application failure. The
+    companion stream-silence check distinguishes an idle error count from a
+    broken logging pipeline. Update both queries when changing the WAF log
+    format or stream labels.
+    """
     s, runner = m.s, m.runner
     if not runner.have("curl"):
         return
@@ -710,17 +679,9 @@ def _check_waf_5xx(m: MonitorRun) -> None:
             f"/carlos/ still 302s)",
             "waf-5xx-burst",
         )
-    # Stream-silence self-test (finding S8): zero waf-access lines over a
-    # full hour on a DEPLOYED instance means the 5xx surveillance above is
-    # reading a silent 0 — log format/stream label drifted, or the shipping
-    # pipeline is down. None (store unreachable) stays silent here: the
-    # store-down path already pages. TWO consecutive zero sweeps are
-    # required (review finding): the first non-grace sweep after a >60min
-    # maintenance window / reboot legitimately sees an empty window (this
-    # sweep's own front-door probe hasn't traversed journald->vector->VL
-    # yet), and a single-strike check would /fail the heartbeat of a healthy
-    # just-recovered stack. By the second sweep, 15 min later, the previous
-    # sweep's probe line has long since landed unless shipping is truly down.
+    # Require two consecutive empty windows. The first sweep after maintenance
+    # may run before its front-door probe has reached VictoriaLogs; the next
+    # sweep should contain that probe unless log shipping is unavailable.
     if (m.s.emr_home / "container" / ".deployed").is_file():
         total = obsquery.vl_count(runner, '_stream:{stream="waf-access"} _time:60m')
         strike = m.s.emr_home / "monitor" / "waf-stream-zero-strike"
@@ -744,11 +705,11 @@ def _check_waf_5xx(m: MonitorRun) -> None:
 
 
 def _check_cert_restart_marker(m: MonitorRun) -> None:
-    """A renewed cert is installed on disk but a consumer pod restart failed
-    (finding S11): tlsops leaves this marker and exits nonzero — OnFailure
-    paged once at that moment. Nag while the marker persists: the WAF/log
-    view serve the OLD cert until the restart lands, and the condition
-    self-conceals until expiry."""
+    """Report certificate consumers that have not loaded a renewed certificate.
+
+    The renewal command records failed consumer restarts in a marker file. The
+    monitor continues reporting that marker until a restart succeeds.
+    """
     from .tlsops import cert_restart_marker
 
     marker = cert_restart_marker(m.runner)
@@ -768,7 +729,7 @@ def _check_cert_restart_marker(m: MonitorRun) -> None:
 
 
 def _check_systemd_failed(m: MonitorRun) -> None:
-    """Failed SYSTEM units for this instance (finding S21a): OnFailure= pages
+    """Failed SYSTEM units for this instance: OnFailure= pages
     exactly once, at failure time — if the channel was down at that moment
     (or the failing unit IS the alert dispatcher), the failure sits invisible
     in `systemctl --failed` forever. Sweep the instance prefix so a
@@ -782,7 +743,7 @@ def _check_systemd_failed(m: MonitorRun) -> None:
     out = runner.output_any_rc(
         ["systemctl", "--failed", "--plain", "--no-legend", f"{s.instance}-*"]
     )
-    # Suffix ALLOWLIST, not a bare prefix match (review finding): instance
+    # Suffix ALLOWLIST, not a bare prefix match : instance
     # names may contain hyphens, so on a multi-instance host `clinic-*`
     # would also sweep up `clinic-a-backup.service` belonging to instance
     # `clinic-a` — duplicate pages with wrong-instance attribution, and the
@@ -811,7 +772,7 @@ def _check_systemd_failed(m: MonitorRun) -> None:
 
 
 def _check_nft_hostfw(m: MonitorRun) -> None:
-    """The inet <instance>-hostfw default-deny table (finding S12): the nft
+    """The inet <instance>-hostfw default-deny table: the nft
     apply unit is FAIL-OPEN — if all its retries fail, the pods still start
     with no host firewall loaded, and the only page was that unit's
     OnFailure. Re-verify the table is present and default-deny whenever the
@@ -844,11 +805,11 @@ def _check_nft_hostfw(m: MonitorRun) -> None:
 
 
 def _check_db_isolation(m: MonitorRun) -> None:
-    """Recurring WAF→DB isolation probe (finding S21c): the boundary that
-    justifies the split-pod topology was previously asserted only by
-    play/check — a hand-edited bind_address plus a reboot (which bypasses
-    play's gates) exposed MariaDB to the edge pod with zero recurring
-    detection. Reuses the same probe `check` runs."""
+    """Verify that the WAF cannot reach the application database port.
+
+    This recurring check protects the split-pod isolation boundary and reuses
+    the probe run by ``check``.
+    """
     from .lifecycle2 import waf_db_isolation_broken
 
     s = m.s
@@ -878,14 +839,10 @@ def _check_db_isolation(m: MonitorRun) -> None:
 
 
 def cmd_monitor(runner: Runner) -> int:
-    # The monitor relays EVERY on-host alert (vmalert, liveness, backup
-    # staleness) — a crash in the sweep SCAFFOLDING (outside the per-check
-    # isolated() blocks: MonitorRun construction, the heartbeat block, an
-    # import) would silence the whole relay with no page. The unit carries no
-    # OnFailure (that would double-alert on normal findings, which the sweep
-    # already dispatches), so this best-effort catch is the crash's only path
-    # to a human: dispatch a direct "monitor sweep crashed" alert, then
-    # re-raise so the run still exits nonzero for `systemctl status`.
+    # Relay unexpected failures that occur outside the per-check isolation
+    # boundary. The unit has no OnFailure handler because that would duplicate
+    # alerts for ordinary check failures. Re-raise after dispatching so systemd
+    # also records the monitor run as failed.
     try:
         return _run_monitor(runner)
     except Exception as e:  # noqa: BLE001 — last-resort crash relay
@@ -1209,7 +1166,7 @@ def _check_channel_config(m: MonitorRun) -> None:
                 "heartbeat-unset",
             )
         else:
-            # Acked blind spot (finding S21b): the ack silences the daily nag,
+            # Acked blind spot: the ack silences the daily nag,
             # but a PHI instance whose total-failure mode is SILENT should not
             # fade from memory entirely. Remind WEEKLY via a NON-FAILING
             # advisory dispatch — the accepted posture must not flip the sweep

@@ -183,7 +183,7 @@ def cmd_setup(runner: Runner) -> int:
     # access root credential into history (host_vars/*.yml is gitignored as a
     # second line of defense, but vaulting is the real fix).
     vaulted = ""
-    # Non-interactive vaulting (finding S19): scripted/CI setup used to skip
+    # Non-interactive vaulting: scripted/CI setup used to skip
     # vaulting entirely (the isatty gate) and silently persist the
     # full-PHI-access root credential in plaintext. A vault password source
     # (CARLOS_VAULT_PASSWORD_FILE here, or ansible's own

@@ -242,7 +242,7 @@ _EXTRA_KNOWN_KEYS = frozenset({
 
 
 # Known keys whose VALUES are secrets or capability URLs — everything the
-# DR "secrets-stripped" env copy must drop (finding S10). Defined next to
+# DR "secrets-stripped" env copy must drop. Defined next to
 # the registry above so the strip and the registry cannot drift; the DR
 # writer keeps a key only when it is BOTH known AND not listed here
 # (unknown keys are dropped and warned — an operator's custom secret with
@@ -371,7 +371,7 @@ def warn_if_persisted_oneshot(settings: Settings, key: str, hint: str) -> None:
     # Match flag()'s truthiness (1/true/yes/on), NOT a literal "1": the guards
     # this warns about are read via flag(), so a persisted CARLOS_ACCEPT_EMPTY_
     # DATADIR=true keeps DISARMING the guard on every boot while the old "== 1"
-    # check stayed silent — the fail-open half never warned (ninth-pass finding).
+    # check stayed silent — the fail-open half never warned.
     persisted = parse_env_file(ef.read_text(errors="replace")).get(key, "").strip().lower()
     if persisted in _TRUTHY_FLAGS:
         warn(f"{key}={persisted} is PERSISTED in {ef} — {hint}")
@@ -583,7 +583,7 @@ class Settings:
             # get('INSTANCE') would fall back to the default 'carlos' and read
             # the WRONG instance's channels — cross-instance alert misdelivery
             # under the one condition the sidecar is meant to survive
-            # (ninth-pass finding; same class as pass-7's identity-pin fix).
+            #
             _sidecar = self.instance_registry_dir / f"{self.instance}.alert.env"
             try:
                 # errors="replace" for the same last-resort-channel reason as
@@ -614,7 +614,7 @@ class Settings:
         # for this passphrase instead of taking the EMR down. Root-only,
         # outside the pod-mounted/backed-up tree, same as the key itself.
         self.age_key_recovery_file = self.secrets_private_dir / "age-key.recovery.enc"
-        # The obs stores' basic-auth credential (finding 33): root-only 0600,
+        # The obs stores' basic-auth credential: root-only 0600,
         # OUTSIDE the pod-mounted/backed-up tree; regenerable (a playbook
         # re-run mints and re-renders every consumer), so never sealed.
         self.obs_http_password_file = self.secrets_private_dir / "obs-http-password"

@@ -102,13 +102,12 @@ fi
 case "$DB_PW" in
     *$'\n'*) echo "ERROR: the password must not contain a newline" >&2; exit 1 ;;
 esac
-# Spring re-interpolates the db_password it reads from carlos.properties
-# (spring_jpa.xml: value="${db_password}"), so '#{' is evaluated as SpEL and
-# '${' as a nested placeholder. A '#{'-bearing password is BOOT-FATAL for the
-# webapp (verified live: EL1008E, /carlos serves 404) and echoes a fragment of
-# the password into the app log; a '${'-bearing one silently authenticates
-# with a different string. Neither is escapable in .properties — refuse here,
-# matching carlos_ctl.secrets.validate_db_password.
+# Spring interpolates db_password after reading carlos.properties
+# (spring_jpa.xml: value="${db_password}"). It evaluates '#{' as SpEL and '${'
+# as a nested placeholder, which changes the credential and may expose part of
+# it in application logs. These sequences cannot be escaped safely in this
+# property, so reject them consistently with
+# carlos_ctl.secrets.validate_db_password.
 case "$DB_PW" in
     *'${'*|*'#{'*)
         echo "ERROR: the password must not contain '\${' or '#{' — Spring would evaluate" >&2

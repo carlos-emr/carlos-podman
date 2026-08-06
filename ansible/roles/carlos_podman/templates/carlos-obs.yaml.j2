@@ -381,13 +381,9 @@ spec:
           type: RuntimeDefault
         capabilities:
           drop: ["ALL"]
-          # NET_BIND_SERVICE is NOT for binding (9443 needs no privilege):
-          # the official caddy image ships /usr/bin/caddy with the FILE
-          # capability cap_net_bind_service=ep, and under no-new-privileges a
-          # non-root exec of a file-caps binary fails EPERM unless the cap is
-          # in the container's permitted set. Without this line the logview
-          # container crash-loops with 'exec /usr/bin/caddy: operation not
-          # permitted' (verified live against caddy 2.11.4).
+          # The Caddy binary carries cap_net_bind_service. With
+          # no-new-privileges, that capability must also be in the container's
+          # permitted set even though this service listens on port 9443.
           add: ["NET_BIND_SERVICE"]
       resources:
         limits:

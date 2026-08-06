@@ -2,7 +2,7 @@
 # Copyright (C) 2026 CARLOS Contributors
 """Boot-time guard (`carlos-ctl guard`), run as a ROOT oneshot
 (@INSTANCE@-guard.service) BEFORE the service user's manager starts the pod:
-blank-datadir detection plus (finding S12) verification that a
+blank-datadir detection plus verification that a
 hostfw-enabled instance's default-deny nft table is actually loaded.
 
 WHY: `carlos-ctl play` refuses a DEPLOYED instance whose MariaDB datadir has
@@ -39,7 +39,7 @@ def datadir_initialized(data_dir: Path) -> bool:
 
 
 def _hostfw_failures(runner: Runner) -> list:
-    """Check 2b (finding S12): the nft apply unit is FAIL-OPEN — if all its
+    """Check 2b: the nft apply unit is FAIL-OPEN — if all its
     retries fail, nothing blocks the user manager from starting the pods on a
     host with NO default-deny table loaded. This guard runs as a root oneshot
     ordered After= the nft unit and Before= the user manager, so it is the

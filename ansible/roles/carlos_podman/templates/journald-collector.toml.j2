@@ -91,25 +91,11 @@ encoding.codec = "json"
 framing.method = "newline_delimited"
 healthcheck.enabled = false
 {% if carlos_obs_http_auth | bool %}
-# Store basic auth, INLINE by necessity: vector's http sink has no
-# password_file hook, and dollar-brace ENV interpolation would put the credential in
-# the 0644 pod spec — hence this file renders 0600, service-user-owned.
-# Escapes: vector env-interpolates the dollar-name and dollar-brace forms over
-# the RAW config text before the TOML parse (the $$1 capture-group escape above
-# depends on that pass). Both forms are DELIBERATELY described in prose here
-# instead of being shown literally, because interpolation runs over the whole
-# file, COMMENTS INCLUDED: an illustrative single-dollar example in this very
-# comment made vector hard-fail config load with `Missing environment variable
-# in config. name = "VAR"` and crash-loop the collector on every default
-# install (the obs profile and store auth are both on by default, and this
-# block renders only when auth is on). Verified live — dropping the two
-# example sigils was the whole fix. A dollar that must appear in this file has
-# to be doubled, as the capture-group escape above is.
-# so a literal '$' in an operator-set credential must render as '$$' or
-# vector hard-fails config load (undefined var) / silently corrupts the
-# credential (defined var). Backslash/quote escapes keep the TOML basic
-# string intact for the same operator-set path (role-generated passwords
-# are alnum-only and unaffected).
+# Vector's HTTP sink does not support a password file, so this generated file
+# contains the store credential and is installed with mode 0600. Vector expands
+# environment references before parsing TOML, including references in comments.
+# Double literal dollar signs and escape backslashes and quotes so operator-set
+# credentials remain valid TOML strings.
 auth.strategy = "basic"
 auth.user = "{{ carlos_obs_http_user | replace('\\', '\\\\') | replace('"', '\\"') | replace('$', '$$') }}"
 auth.password = "{{ carlos_obs_http_password_effective | replace('\\', '\\\\') | replace('"', '\\"') | replace('$', '$$') }}"

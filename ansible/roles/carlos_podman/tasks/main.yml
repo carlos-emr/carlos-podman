@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-# carlos_podman — provision one CARLOS EMR instance (rootless podman pods,
-# systemd units, configs, credentials scaffolding) on a host. The runtime
-# lifecycle (build/play/seal/backup/monitor/rotate) belongs to the installed
-# carlos-ctl CLI; this role owns everything the bash init/bootstrap/sync-conf
-# used to.
+# Provision one CARLOS EMR instance, including rootless Podman pods, systemd
+# units, configuration, and credential scaffolding. The installed carlos-ctl
+# CLI manages runtime lifecycle operations.
 ---
 - name: Validate configuration (within-instance + cross-instance collisions)
   ansible.builtin.import_tasks: asserts.yml

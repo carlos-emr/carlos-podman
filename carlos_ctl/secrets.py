@@ -90,7 +90,7 @@ def validate_db_password(value: str, label: str) -> None:
     # so after the Properties lookup the resulting VALUE is still run through
     # the placeholder resolver and the SpEL BeanExpressionResolver. A password
     # containing '#{' is evaluated as an expression and the whole webapp
-    # context fails to start — verified live against carlos-emr/carlos
+    # context fails to start against carlos-emr/carlos
     # develop, where a password ending '#{ok}' produced
     #   SpelEvaluationException: EL1008E: Property or field 'ok' cannot be found
     # (which also writes a FRAGMENT OF THE PASSWORD into the application log),
@@ -154,7 +154,7 @@ def reap_credential_dropfiles(settings: Settings) -> None:
     """Shred any leftover .new-* one-time credential drop-files. They hold
     live cleartext credentials in the persistent root-only private dir; the
     operator is told to shred each after reading, but nothing enforced it, so
-    they accumulated every rotation (finding 21). Called by seal and the
+    they accumulated every rotation. Called by seal and the
     boot-time secrets render — the two root paths that run after a rotation."""
     d = settings.secrets_private_dir
     if not d.is_dir():
@@ -709,7 +709,7 @@ def bundle_decrypts(runner: Runner) -> bool:
 
 
 def _assert_owned_by(p: Path, uid: int) -> None:
-    """Render-ownership verification (finding C22): the chowns above/below it
+    """Render-ownership verification: the chowns above/below it
     are contextlib.suppress(OSError)-wrapped, so a failed chown used to leave
     a fragment (or the run-secrets dir) root-owned while the render reported
     SUCCESS — the rootless init containers then could not read it, the app
@@ -797,7 +797,7 @@ def cmd_secrets_render(runner: Runner) -> int:
                 "db_password": d_pass,
             })
     # Boot-time reap: shred any .new-* credential drop-file a rotation left
-    # in the persistent private dir (finding 21) now that a fresh render has
+    # in the persistent private dir now that a fresh render has
     # re-materialized the live values into tmpfs.
     reap_credential_dropfiles(s)
     return 0
@@ -1254,7 +1254,7 @@ def cmd_seal(runner: Runner) -> int:
         # re-read through age_key() (TPM path — just round-trip-verified), so
         # this also works on a RE-seal where the plaintext file is long gone.
         _maybe_write_recovery_wrap(runner)
-    # VERIFY-BEFORE-SHRED (finding 54c): _shred'ing restic.env/backup-db.env
+    # VERIFY-BEFORE-SHRED: _shred'ing restic.env/backup-db.env
     # after bundle_set — WITHOUT confirming the bundle actually decrypts back
     # to their content — would, on an age recipient/key mismatch (a stale
     # age.pub from an earlier keypair), destroy the ONLY on-host restic
@@ -1355,7 +1355,7 @@ def cmd_seal(runner: Runner) -> int:
         )
     at_rest = "TPM-sealed at rest" if have_tpm else "a 0600 file — use LUKS"
     # Reap any .new-* credential drop-file a prior rotation left in the
-    # persistent private dir (finding 21) — sealing is a natural checkpoint.
+    # persistent private dir — sealing is a natural checkpoint.
     reap_credential_dropfiles(s)
     log(f"Secrets consolidated into {s.secrets_bundle} (SOPS+age single master); "
         f"the age key is {at_rest}")
@@ -1416,7 +1416,7 @@ def preflight_reseal(runner: Runner) -> None:
             "(old credentials re-materialize at the next boot). Set CARLOS_SEAL_NO_TPM=1 "
             "to accept rely-on-LUKS at-rest protection, then re-run."
         )
-    # The escrow-confirmation gate cmd_seal enforces (finding 19). Its marker
+    # The escrow-confirmation gate cmd_seal enforces. Its marker
     # lives in secrets_private_dir, which is deliberately EXCLUDED from
     # backups — so a DR-rebuilt host never has it, and a non-interactive
     # `rotate` would re-password the DB and THEN hit the seal's escrow
@@ -1544,8 +1544,7 @@ def _rotate_db_root(runner: Runner) -> int:
     # sql_log_bin=0: the root ALTER USER must NOT enter the binlog chain, or a
     # windowed PITR restore (or the restore drill) replays it and rewinds root
     # to a stale generation — the credential store then holds the new password
-    # while mysql.user holds the old, a root lockout (ninth-pass finding, same
-    # contract as _PROVISION_SQL and the load/replay legs).
+    # while mysql.user holds the old, a root lockout.
     sql = (
         f"SET SESSION sql_log_bin = 0;\n"
         f"ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY '{sql_pw}';\n"
@@ -1565,7 +1564,7 @@ def _rotate_db_root(runner: Runner) -> int:
     )
     if cp.returncode != 0:
         raise CtlError("ALTER USER failed — is the current CARLOS_DB_ROOT_PASSWORD correct?")
-    # EMIT-EARLY (finding 20): the instant ALTER USER succeeds, a GENERATED
+    # EMIT-EARLY: the instant ALTER USER succeeds, a GENERATED
     # password exists only in this process — any failure below (secret
     # refresh, an ENOSPC inside set_kv's staging, the bundle sync) would
     # otherwise strand MariaDB root on a value known to nobody, recoverable
@@ -1775,7 +1774,7 @@ def _rotate_restic(runner: Runner) -> int:
             # store: a newline splits the line and a CR is silently trimmed by
             # restic but kept in the file, so the stored password stops opening
             # the repo. The sibling rotations validate their operator values
-            # (rotate db-root, rotate obs); this one did not (ninth-pass finding).
+            # (rotate db-root, rotate obs); this one did not.
             validate_db_password(new_pw, "RESTIC_NEW_PASSWORD")
         newpw_file = _run_tmpfile(f"{s.cred_restic}-new.", root_required=True)
         try:
@@ -1971,7 +1970,7 @@ def _rotate_age_key(runner: Runner) -> int:
     # at the .new key staging (or a SIGTERM mid `sops -e`, which cli.py
     # converts to SystemExit so this finally RUNS) leaked
     # /run/rekey-staged.*.yaml — in the pre-encrypt window, the decrypted
-    # bundle PLAINTEXT (pass-8 finding M1).
+    # bundle PLAINTEXT.
     plain = new_key = new_bundle = ""
     staged: Optional[Path] = None
     try:
@@ -2066,7 +2065,7 @@ def _rotate_age_key(runner: Runner) -> int:
         # shredded the on-disk key (it lives only in the TPM blob), so an
         # unconditional _shred here hit a missing file and emitted the scary
         # "plaintext may be recoverable" warning on every TPM-host rekey — a
-        # false at-rest-leak claim in a compromise-response flow (ninth-pass).
+        # false at-rest-leak claim in a compromise-response flow.
         if s.age_key_file.is_file():
             _shred(runner, s.age_key_file)
         os.replace(key_new, s.age_key_file)

@@ -238,7 +238,7 @@
       here). Choose an obs password without those characters.
   when: carlos_obs_enabled | bool and (carlos_obs_http_password | default('', true)) | length > 0
 
-# C0-control parity with the CLI's rotate-obs validation (pass-8 M3, same
+# C0-control parity with the CLI's rotate-obs validation (same
 # class as the db-root assert above): a pasted newline/tab passes the
 # quote/backslash check but renders a literal control character inside the
 # TOML basic string journald-collector.toml.j2 emits — the log collector
@@ -580,7 +580,7 @@
       # this assert vacuous for the shipped configuration: two
       # default-config instances each loaded their own host-global 'policy
       # drop' table and mutually blackholed each other's front door
-      # (review finding).
+      # .
       # `| bool` on both sides: INI-inventory host-line vars arrive as the
       # STRING "false", which is truthy in raw Jinja.
       - not (carlos_host_firewall_enabled

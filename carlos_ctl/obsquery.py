@@ -4,10 +4,9 @@
 VictoriaLogs / vmalert), used by `check` and the monitor. All host-loopback,
 all best-effort — callers treat empty as "no data / unreachable".
 
-Every probe funnels through store_curl(): the stores carry HTTP basic auth
-(finding 33 — 180 days of PHI-adjacent logs must not be readable by any
-local process), and the credential travels via `curl -K -` stdin config so
-it is never a /proc-visible argv token."""
+Every probe uses ``store_curl()``. Store credentials are passed to
+``curl -K -`` through standard input rather than exposed in process arguments.
+"""
 
 from __future__ import annotations
 

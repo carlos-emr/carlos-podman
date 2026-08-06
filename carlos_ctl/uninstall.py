@@ -93,7 +93,7 @@ WILL PRESERVE (delete by hand only if you truly intend to destroy data):
     # uninstall — including an interactive one months later — with no prompt,
     # decommissioning the instance (pods down, units/nft/registry gone) from
     # two stale lines. Warn value-agnostically, mirroring the restore path's
-    # persisted-CARLOS_RESTORE_CONFIRMED warning (ninth-pass finding).
+    # persisted-CARLOS_RESTORE_CONFIRMED warning.
     from .config import parse_env_file
 
     if s.env_file.is_file():

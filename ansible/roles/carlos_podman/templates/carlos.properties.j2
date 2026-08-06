@@ -148,17 +148,16 @@ confidentiality_statement.v3=
 ###
 ### ——————————————————————————————————————————————————————————————————————————————————————————————————————————————————— ###
 ### Database Name
-{# carlos_jdbc_zero_date (default 'round' — upstream behavior): 'round' turns a
-   stored 0000-00-00 into a REAL date on read (a fabricated clinical date);
-   'convertToNull' surfaces it as null so bad dates show up instead of being
-   invented. Opt-in knob, finding C27 — validate app behavior before changing. #}
+{# ``round`` preserves upstream handling of zero dates. ``convertToNull``
+   exposes invalid dates as null instead of substituting a date. Validate
+   application behavior before changing this compatibility setting. #}
 db_name=oscar?zeroDateTimeBehavior={{ carlos_jdbc_zero_date | default('round', true) }}&useOldAliasMetadataBehavior=true&jdbcCompliantTruncation=false&characterEncoding=UTF-8&connectionCollation=utf8mb4_general_ci
 ### Database Username
 db_username=root
 ### Database Password
-## Rendered once by the playbook with the MariaDB ROOT password — exactly as
-## the bash renderer did; `carlos-ctl db-users` later switches the app to a
-## least-privilege DB user via the sealed fragment, not by editing this line.
+## Initially rendered with the MariaDB root password. `carlos-ctl db-users`
+## later supplies the least-privilege application credential through the
+## sealed override fragment rather than modifying this line.
 ## Double backslashes: a lone '\' starts an escape in Java Properties (a stray
 ## '\u' even throws Properties.load and crash-loops the app) — matches the
 ## CLI's properties_escape_value on the rotation path so both renders agree.
@@ -229,12 +228,11 @@ ModuleNames=Fax
 ## requires REST www services.
 cobalt=no
 ### Turns on Allergy Checking
-### CLINICAL SAFETY (finding C24): 'no' is the inherited upstream default —
-### prescriptions are NOT checked against the patient's recorded allergies.
-### Interaction warnings (RX_INTERACTION_WARNING) are separately on. Sites
-### SHOULD evaluate carlos_rx_allergy_checking: 'yes' in host_vars; kept
-### opt-in only because flipping clinical-workflow behavior on upgrade is
-### its own risk. See the README "Clinical-safety toggles" section.
+### Clinical safety: 'no' is the upstream default, so prescriptions are not
+### checked against recorded allergies. Interaction warnings are configured
+### separately by RX_INTERACTION_WARNING. Evaluate
+### carlos_rx_allergy_checking='yes' against site workflows before enabling it.
+### See "Clinical-safety toggles" in the project guide.
 RX_ALLERGY_CHECKING={{ carlos_rx_allergy_checking | default('no', true) }}
 ### TURNS ON THE NEW CASEMANAGEMENT INTERFACE AND LAYOUT TEMPLATE IN THE ENCOUNTER.
 CASEMANAGEMENT=yes

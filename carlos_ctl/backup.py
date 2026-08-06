@@ -89,12 +89,10 @@ _ROOT_TUNABLES = [
 # Tables that CANNOT be made InnoDB, so the engine audit must not refuse the
 # dump over them — the operator has no remedy to apply.
 #
-# formRourke2009 (the Rourke Baby Record, upstream ON/BC schema) has 1227
-# columns, over InnoDB's hard limit of 1017: `ALTER TABLE ... ENGINE=InnoDB`
-# fails with ERROR 1005 (errno 185 "Too many columns") under EVERY row format
-# (DYNAMIC/COMPRESSED/COMPACT/REDUNDANT), and innodb_page_size is already at
-# its 32K maximum — all verified live 2026-08-02. Aria is a deliberate
-# upstream choice for that form's width, not an oversight. Current CARLOS
+# formRourke2009 (the Rourke Baby Record in the upstream ON/BC schema) has
+# 1,227 columns, exceeding InnoDB's limit of 1,017 columns. Converting it fails
+# with MariaDB error 185 under every supported row format, including with a
+# 32 KiB InnoDB page size. Aria is therefore required for this table. CARLOS
 # also does not offer the 2009 form in the encounter's form picker
 # (`encounterForm` lists Rourke/2006/2017/2020), so it holds legacy rows
 # only — though the save path is still allowlisted in the app's
@@ -347,14 +345,11 @@ class BackupContext:
             the MariaDB server process. To turn it on again: fix the cause,
             shutdown the MariaDB server and restart it.
 
-        After that latch `@@log_bin` STILL reads 1 (verified live against the
-        pinned mariadb:11.4.12), so every `@@log_bin`-based guard in this file
-        believed PITR was healthy while the chain had stopped advancing. The
-        15-minute ship then succeeded forever (`FLUSH BINARY LOGS` is a no-op
-        that returns 0 once logging is off, and the already-closed binlogs are
-        still there to re-ship), stamping `.last-binlog-ok` on every run — so
-        the monitor's freshness check stayed green while the deployment's whole
-        RPO guarantee was gone.
+        After that latch, ``@@log_bin`` may still report 1. A guard based only
+        on that variable can therefore report healthy binary logging after the
+        chain has stopped advancing. ``FLUSH BINARY LOGS`` may also return 0
+        while logging is disabled, so successful command execution alone is
+        not a sufficient health signal.
 
         `SHOW BINLOG STATUS` (MariaDB 11.4+, and its pre-11.4 spelling
         `SHOW MASTER STATUS`) is the runtime-authoritative answer: it returns
@@ -939,7 +934,7 @@ def _reap_orphaned_stagings(ctx: BackupContext) -> None:
     # dump + restored binlog chain. The drill's scratch dir was previously
     # swept ONLY at the start of the next drill (weekly), so a SIGKILLed drill
     # leaked PHI for up to ~7 days — the reaper runs on every 15-minute backup
-    # verb, so age-gate both here to close that gap (ninth-pass finding).
+    # verb, so age-gate both here to close that gap.
     for stale in list(ctx.backup_dir.glob(".restore.*")) + \
             list(ctx.backup_dir.glob(".verify.*")):
         with contextlib.suppress(OSError):
@@ -987,7 +982,7 @@ def cmd_backup(runner: Runner, args: List[str]) -> int:
             if ctx.binlog_shipped:
                 (ctx.backup_dir / ".last-binlog-ok").touch()
                 # Expire binlog snapshots ONLY while nightly fulls are FRESH
-                # (review finding): the replay chain rolls forward from the
+                # : the replay chain rolls forward from the
                 # newest dump's anchor, so age-expiring binlogs while fulls
                 # fail would erode the only chain that can recover a stale
                 # dump — retention silently pre-deciding data loss. While
@@ -1045,7 +1040,7 @@ def _stage_dr_env(s: Settings) -> None:
     root password), but a full restore NEEDS its non-secret site identity —
     SERVER_NAME, BIND_IP, ports, image pins — so stage a SECRETS-STRIPPED
     copy that DOES ride in the backup as carlos-app.env.dr. ALLOWLIST, not a
-    name-pattern denylist (finding S10): a key is kept only when it is a
+    name-pattern denylist: a key is kept only when it is a
     KNOWN carlos-ctl key that is not in config.SECRET_ENV_KEYS. The old
     regex strip was fail-OPEN — an operator's custom secret whose name
     matched none of the credential tokens (SMTP_AUTH=..., S3_ACCESS=...)
@@ -1489,7 +1484,7 @@ def _snapshot_listing_count(ctx: BackupContext, tag: str, needle: str) -> int:
 
 
 def _forget_own_tag(ctx: BackupContext, tag: str, keep: List[str]) -> None:
-    """Per-mode retention (finding C23): the nightly full used to be the ONLY
+    """Per-mode retention: the nightly full used to be the ONLY
     place binlog/docs snapshots were forgotten — while fulls fail for days
     (dump error, engine-audit refusal), the 15-minute binlog/docs modes kept
     accumulating ~192 snapshots/day with NO pruning, and a local repo could
@@ -1551,7 +1546,7 @@ def _verify_restore(ctx: BackupContext) -> bool:
         )
         return False
 
-    # Tmpfs preflight (finding C23): the drill restores the whole DB into a
+    # Tmpfs preflight: the drill restores the whole DB into a
     # RAM tmpfs (VERIFY_TMPFS_SIZE, default 4g). Once the live DB outgrows
     # it, the weekly drill — the only end-to-end restorability proof — fails
     # every week until resized. Warn ahead of time from restic's own stats
@@ -1645,7 +1640,7 @@ def _verify_restore(ctx: BackupContext) -> bool:
                 break
             time.sleep(2)
         else:
-            # Exhaustion must be TERMINAL (pass-8 L1): falling through to the
+            # Exhaustion must be TERMINAL: falling through to the
             # load made a never-ready scratch server fail with the dump-load
             # message below, whose "raise VERIFY_TMPFS_SIZE" guidance sent
             # the operator at a tmpfs-sizing fix for what was a container
@@ -1683,8 +1678,7 @@ def _verify_restore(ctx: BackupContext) -> bool:
         # and the load then fails with a raw "Can't connect to socket 2002".
         # Diagnose that as a startup/liveness failure, NOT as a tmpfs-sizing
         # problem — the VERIFY_TMPFS_SIZE guidance below misdirects the
-        # operator when the container simply isn't there (ninth-pass finding,
-        # observed live; same misdiagnosis class as pass-8 L1 on the load leg).
+        # operator when the container simply isn't there.
         if not runner.ok(runner.podman_user_argv(
             ["container", "exists", name]
         )) or "running" not in runner.output(runner.podman_user_argv(
@@ -2025,7 +2019,7 @@ def _restore_pitr(ctx: BackupContext, argv: List[str]) -> bool:
                 return False
         # Restore-to-latest on a LIVE host: the freshest local binlogs are
         # shipped AFTER the confirmation gate and AFTER the carlos/drugref
-        # containers are stopped (finding M5). With the writers quiesced,
+        # containers are stopped. With the writers quiesced,
         # FLUSH BINARY LOGS closes a binlog holding every committed write, so
         # nothing a clinician saved during the (possibly minutes-long)
         # confirmation prompt can be stranded in the still-active binlog.
@@ -2080,7 +2074,7 @@ def _restore_pitr(ctx: BackupContext, argv: List[str]) -> bool:
             local_continues_chain = False
         # Chain fetch + validation, factored so --dry-run (exact plan, no
         # mutation) and the live path (which runs it AFTER the confirm gate
-        # and app-stop — finding M5) share one implementation. Read-only
+        # and app-stop share one implementation. Read-only
         # against the repository: with the anchor pruned (any dump older than
         # the ~9-day binlog window) or a mid-chain gap, replay would apply
         # --start-position to the WRONG file / silently skip lost
@@ -2091,7 +2085,7 @@ def _restore_pitr(ctx: BackupContext, argv: List[str]) -> bool:
             nonlocal scratch
             # Refusals after the app-stop must say so and name the recovery
             # command; pre-confirm/pre-stop refusals (dry-run, and live
-            # restores with no final ship — review finding) leave the app
+            # restores with no final ship — edge case) leave the app
             # serving and need no hint.
             down_hint = (
                 " The carlos/drugref containers are STOPPED (the EMR front door "
@@ -2211,8 +2205,7 @@ def _restore_pitr(ctx: BackupContext, argv: List[str]) -> bool:
             # the still-stale repo chain contradicts the dry-run contract ("shows
             # exactly what it would do") and coaches CARLOS_STOP_PAST_CHAIN_END_OK
             # — a data-loss knob — for a refusal the live run would never make
-            # (ninth-pass finding; sibling base-dump-only guard already carves
-            # out `if not dry`).
+            #
             if stop and selected and dry and will_ship:
                 warn(
                     f"restore(plan): --stop-datetime '{stop}' is past the currently "
@@ -2258,7 +2251,7 @@ def _restore_pitr(ctx: BackupContext, argv: List[str]) -> bool:
             # validate NOW, before the confirmation gate: every refusal
             # happens with the app still serving, and the plan shows exact
             # counts. Only a restore that will ship must defer the fetch
-            # until after the app-stop (finding M5).
+            # until after the app-stop.
             replay = fetch_chain(app_stopped=False)
             if replay is None:
                 return False
@@ -2366,7 +2359,7 @@ def _restore_pitr(ctx: BackupContext, argv: List[str]) -> bool:
                 return False
 
         # Quiesce the app BEFORE the final binlog ship AND the overwrite
-        # (finding M5): the DROP/CREATE load must not race Tomcat's pooled
+        # the DROP/CREATE load must not race Tomcat's pooled
         # connections still writing PHI, and stopping the writers FIRST means
         # the FLUSH below closes a binlog holding every committed write —
         # nothing can land in the active binlog during the confirmation

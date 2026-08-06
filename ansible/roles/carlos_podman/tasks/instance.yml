@@ -284,7 +284,7 @@
     - item.1.stat.exists | default(false)
     - item.0.stat.checksum | default('') != item.1.stat.checksum | default('')
 
-# --- obs-store basic-auth credential (finding 33) -----------------------------------
+# --- obs-store basic-auth credential -----------------------------------
 # ONE regenerable credential per instance protects VictoriaLogs/VictoriaMetrics/
 # vmalert (180d of PHI-adjacent logs must not be readable by any local
 # process). Canonical plaintext: the root-only 0600 file below, OUTSIDE the
@@ -463,7 +463,7 @@
          and (carlos_pod_dns | replace(',', ' ') | split | map('regex_replace', '^(.*)$', 'nameserver \1') | join('\n')) ~ '\n'
          or (_host_resolv.content | default('' | b64encode) | b64decode) }}
 
-# Drift review for the operator-owned resolv.conf (finding C22): force:false
+# Drift review for the operator-owned resolv.conf: force:false
 # means a later carlos_pod_dns (or host resolver) change silently never
 # reaches the installed file — outbound integrations (Teleplan/HRM/MCEDT)
 # keep resolving against stale servers with no signal. Same warn-only shape
@@ -517,29 +517,12 @@
          or lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}
   no_log: true
 
-# PIN-encryption default: CLEARTEXT ('no'), on a fresh datadir as well as an
-# existing one. host_vars carlos_pin_encrypted overrides either way.
-#
-# This used to derive 'yes' for a fresh datadir, on the reasoning that a fresh
-# install has "no stored PINs to break". That premise is FALSE and it broke
-# first login on every new site: provisioning runs BEFORE the schema load, and
-# the schema load is what creates the bootstrap administrator — the Flyway seed
-# (migration/on/V1.0.2__on_data.sql and the BC equivalent) inserts `carlosdoc`
-# with a CLEARTEXT pin. LoginCheckLoginBean.authenticate() encrypts the
-# SUBMITTED pin before comparing it to the stored one, so with IS_PIN_ENCRYPTED=yes
-# the comparison can never match: the seeded account is refused with
-# "Pin-local needed" and QUICKSTART step 5 / the README's "First login" are
-# unreachable. Verified live on a fresh Ontario install — login went from
-# `302 -> /carlos/index?login=failed` to `302 -> /carlos/provider/providercontrol`
-# the moment the stored PIN was converted to the encrypted form.
-#
-# Choosing cleartext costs nothing real: Misc.encryptPIN is a @Deprecated
-# non-cryptographic running-sum over the characters ("Do not rely on this for
-# securing sensitive data" — its own javadoc), trivially reversible and
-# unsalted, so 'yes' is obfuscation, not protection. Matching what upstream's
-# own seed data writes is the honest default; sites that want the legacy
-# obfuscation set carlos_pin_encrypted: 'yes' AND must then re-set every
-# seeded PIN themselves.
+# PIN encryption defaults to `no` for new and existing databases. Upstream
+# seed data stores the bootstrap administrator PIN in clear text, so enabling
+# the legacy transformation before the first login prevents that account from
+# authenticating. The transformation is an unsalted, reversible compatibility
+# mechanism rather than a password-security control. Sites that enable
+# `carlos_pin_encrypted` must also migrate all seeded PIN values.
 - name: Detect an initialized MariaDB datadir (recorded for operator diagnostics)
   ansible.builtin.stat:
     path: "{{ carlos_data_dir }}/{{ carlos_datadir_signature }}"
@@ -788,7 +771,7 @@
 
 - name: Derive the public recipient
   # Gated on the KEY FILE existing, not on `_age_keygen is not skipped`
-  # (finding C22): after a partial run that created the key but died before
+  # after a partial run that created the key but died before
   # this task, every later run skipped keygen (creates: satisfied) so the
   # old gate skipped the derivation FOREVER — the recipient file stayed
   # missing and `carlos-ctl seal` failed opaquely. `creates:` keeps the
@@ -865,13 +848,10 @@
     - item.changed | default(false)
 
 - name: Restart changed-and-active timers
-  # ignore_errors (NOT failed_when:false) + the WARNING task below (finding
-  # C22, corrected in review): `failed_when: false` REWRITES each registered
-  # item's `failed` flag to false, which made the WARN below dead code —
-  # `ignore_errors: true` keeps `failed: true` in the register (and prints
-  # the red ...ignored line) while letting the play continue. A failed
-  # restart used to silently drop a changed OnCalendar: the timer kept
-  # firing on its OLD schedule with zero signal.
+  # Preserve each failed result for the warning task below while allowing the
+  # play to continue. `failed_when: false` would clear the result's failure
+  # state and prevent the warning from identifying timers that retained their
+  # previous schedule.
   ansible.builtin.systemd:
     name: "{{ carlos_instance }}-{{ item.item.item }}"
     state: restarted
@@ -1112,7 +1092,7 @@
   # The secret above is create-only (bootstrap material for a FRESH datadir
   # init) — rotating carlos_db_root_password in host_vars never rewrites it,
   # by design ('carlos-ctl rotate db-root' owns live rotation). But the
-  # silent split bit operators (finding C22): a future fresh-datadir init
+  # silent split bit operators: a future fresh-datadir init
   # would use the OLD password while host_vars says otherwise. Compare the
   # mysql_native_password hashes (never plaintext) and WARN on mismatch.
   # Output is only MATCH/MISMATCH; the password rides the environment.
@@ -1403,10 +1383,9 @@
   # The mysqld-exporter reads its 0600 cnf as container uid 65534; a host
   # chown cannot map that under rootless — run it INSIDE the userns.
   # `<user>:<user>`, never a bare `<user>`: coreutils chown with no group
-  # leaves the group as root on a root-rendered file, and host gid 0 is NOT
-  # in the service user's userns id_map — chown(2) then refuses the file
-  # outright and the unshare chown below EPERMs (verified live: carlos:root
-  # -> EPERM, carlos:carlos -> ok).
+  # leaves the root group on a root-rendered file. Host gid 0 is outside the
+  # service user's namespace mapping, so the subsequent user-namespace chown
+  # would fail with EPERM.
   ansible.builtin.shell: |
     chown "{{ carlos_service_user }}:{{ carlos_service_user }}" "{{ carlos_conf_dir }}/metrics/exporter.my.cnf" 2>/dev/null || true
     runuser -u {{ carlos_service_user }} -- env \

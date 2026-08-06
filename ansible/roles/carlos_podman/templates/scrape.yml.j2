@@ -37,20 +37,10 @@ scrape_configs:
       - targets: ['{{ carlos_obs_pod }}:9428']
 {% if carlos_obs_http_auth | bool %}
     basic_auth:
-{# to_json: the assert denylists only "/\ for the TOML/curl/Caddy holders — an
-   unquoted plain scalar here would let a `: `-bearing username corrupt the
-   YAML and crash-loop vmagent (all metric alerting down). JSON is a YAML
-   subset, so this is always safe.
-   COLUMN 0 IS LOAD-BEARING: this comment used to be indented 6 spaces. Jinja
-   deletes a comment's TEXT but KEEPS the whitespace that preceded it on that
-   line, and Ansible's trim_blocks then eats the newline after the closing
-   marker — so those 6 spaces were prepended to the next line, rendering
-   `username` at 12 spaces under a 6-space `password_file`. That is invalid
-   YAML, and vmagent hard-failed at startup ("cannot unmarshal data: yaml:
-   line 39: did not find expected key") and crash-looped on EVERY default
-   install (the obs profile and store auth are both on by default), taking
-   all metrics and every vmalert rule with it. Verified live; keep any
-   comment inside a mapping at column 0. #}
+{# Render the username as JSON because JSON strings are valid YAML scalars.
+   Keep this Jinja comment at column zero: with trim_blocks enabled, leading
+   whitespace before the marker can be joined to the following YAML line and
+   change its indentation. #}
       username: {{ carlos_obs_http_user | to_json }}
       password_file: /etc/obs-auth/password
 {% endif %}
