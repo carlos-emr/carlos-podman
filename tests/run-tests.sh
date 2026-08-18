@@ -152,6 +152,10 @@ HOSTFW_ENABLED=0
 OBS_HTTP_USER=obs
 CARLOS_DB_ROOT_PASSWORD=test-root-pw
 CARLOS_TLS_MODE=manual
+CARLOS_REF=auto
+CARLOS_ARTIFACT=auto
+CARLOS_SOURCE_BRANCH=develop
+DRUGREF_REF=master
 EOF
     chmod 0600 "$home/container/carlos-app.env"
     printf 'db_username=carlos\ndb_password=app-pw\n' > "$home/container/conf/carlos/carlos.properties"
@@ -407,6 +411,55 @@ refute "release mode refuses a moving (non-40-hex) source ref" \
 assert "rollback retags both images and re-plays" ctl "$HBD" rollback
 refute "rollback refuses when drugref :previous is missing (lockstep guard)" \
     ctle "$HBD" STUB_NO_DRUGREF_PREV=1 -- rollback
+
+# ================= source selection (release-first + sticky pin) =================
+# carlos_ctl.source: CARLOS_REF=auto resolves the newest GitHub release on the
+# FIRST build (WAR artifact preferred), pins it in build/.source-pin, and every
+# later build is OFFLINE on that pin — no drift without operator intervention.
+# The curl stub answers api.github.com deterministically (STUB_GH_*).
+HSRC="$WORK/h-source"; mk_home "$HSRC"
+touch "$HSRC/build/Containerfile" "$HSRC/build/Containerfile.drugref"
+m=$(mark)
+assert "first auto build resolves the newest release and pins it" ctl "$HSRC" build
+assert "the resolve queried the GitHub releases API" \
+    log_since "$m" "api.github.com/repos/carlos-emr/carlos/releases"
+assert "the source pin was persisted" test -s "$HSRC/build/.source-pin"
+assert "the pinned release COMMIT drives CARLOS_REF (never the mutable tag)" \
+    log_since "$m" "CARLOS_REF=1111111111111111111111111111111111111111"
+assert "the published WAR selects the download stage" \
+    log_since "$m" "CARLOS_WAR_STAGE=download"
+assert "the WAR sha256 rides along for the in-image verification" \
+    log_since "$m" "CARLOS_WAR_SHA256=dddddddddddddddddddddddddddddddd"
+m=$(mark)
+assert "a PINNED build works with the GitHub API down (sticky = offline)" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- build
+refute "the pinned build made no GitHub API call" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q api.github.com"
+assert "source show prints the pinned release" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HSRC' python3 -m carlos_ctl.cli source | grep -q 2026.08.0"
+rm -f "$HSRC/build/.source-pin"
+refute "an UNPINNED auto build refuses when the API is down" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- build
+assert "the refusal points at 'source set' (the offline escape hatch)" \
+    bash -c "cd '$ROOT' && STUB_GH_DOWN=1 EMR_HOME='$HSRC' \
+        python3 -m carlos_ctl.cli build 2>&1 | grep -q 'source set'"
+assert "source set <sha> pins offline" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- source set 2222222222222222222222222222222222222222
+m=$(mark)
+assert "the manual sha pin drives the next build" ctl "$HSRC" build
+assert "the sha pin becomes CARLOS_REF" \
+    log_since "$m" "CARLOS_REF=2222222222222222222222222222222222222222"
+refute "a bare-commit pin compiles from source (no WAR stage)" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q CARLOS_WAR_STAGE=download"
+assert "source update re-resolves to the newest release" ctl "$HSRC" source update
+assert "the pin moved back to the release" grep -q 2026.08.0 "$HSRC/build/.source-pin"
+assert "a no-release repo falls back to the branch HEAD sha" \
+    bash -c "cd '$ROOT' && STUB_GH_RELEASES=none EMR_HOME='$HSRC' \
+        python3 -m carlos_ctl.cli source update >/dev/null 2>&1 \
+        && grep -q '\"kind\": \"branch\"' '$HSRC/build/.source-pin'"
+assert "source clear removes the pin" ctl "$HSRC" source clear
+assert "the pin file is gone" bash -c "! test -e '$HSRC/build/.source-pin'"
+refute "source rejects unknown sub-verbs" ctl "$HSRC" source frobnicate
 
 # Rollback schema-compatibility guard: rolling the CODE back never reverses
 # hand-applied SQL migrations. play records the live schema fingerprint,

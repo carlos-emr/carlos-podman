@@ -137,25 +137,43 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     drugref_image = s.get("DRUGREF_IMAGE")
     carlos_repo = carlos_image.rsplit(":", 1)[0]
     drugref_repo = drugref_image.rsplit(":", 1)[0]
-    carlos_ref = s.get("CARLOS_REF")
+    # WHICH CARLOS to build, and from which artifact: the historical manual
+    # CARLOS_REF passthrough, or (CARLOS_REF=auto, the default) the sticky
+    # release-first pin — resolved via the GitHub API exactly once, then read
+    # offline from $EMR_HOME/build/.source-pin. See carlos_ctl/source.py.
+    from . import source as source_mod
+
+    pin = source_mod.resolve_for_build(runner)
+    carlos_ref = pin.ref
     drugref_ref = s.get("DRUGREF_REF")
 
     # Supply-chain gate. A branch name is a MOVING ref — the fetched tarball
     # has no checksum, so what gets built is whatever the branch points at
     # right now. DEV mode (default): warn only. RELEASE mode
     # (CARLOS_BUILD_MODE=release): HARD-FAIL unless every source is pinned to
-    # a 40-hex commit SHA AND its tarball sha256 is supplied AND the Maven
-    # dependency-lock is enforced — the three verification layers, all on.
+    # a 40-hex commit SHA AND its content is checksummed AND the Maven
+    # dependency-lock is enforced. For a WAR-artifact CARLOS build the
+    # published WAR's sha256 (verified in-image) IS the content checksum, and
+    # the compile-only layers (source tarball sha256, dependency lock) do not
+    # apply to the CARLOS image — the lock still governs the DrugRef compile.
     build_dep_lock = "0"
     if s.get("CARLOS_BUILD_MODE") == "release":
         build_dep_lock = "1"
-        for name, ref in (("CARLOS_REF", carlos_ref), ("DRUGREF_REF", drugref_ref)):
+        gated_refs = [("DRUGREF_REF", drugref_ref)]
+        if pin.artifact != "war":
+            gated_refs.insert(0, ("CARLOS_REF", carlos_ref))
+        for name, ref in gated_refs:
             if not _SHA40.match(ref):
                 raise CtlError(
                     f"CARLOS_BUILD_MODE=release: {name}='{ref}' is not a full 40-hex commit "
                     f"SHA — a release build must pin an immutable, auditable source ref"
                 )
-        if not s.get("CARLOS_SRC_SHA256"):
+        if pin.artifact == "war" and not pin.war_sha256:
+            raise CtlError(
+                "CARLOS_BUILD_MODE=release: the WAR artifact has no sha256 to verify — "
+                "re-resolve ('carlos-ctl source update') or set CARLOS_WAR_SHA256"
+            )
+        if pin.artifact != "war" and not s.get("CARLOS_SRC_SHA256"):
             raise CtlError(
                 "CARLOS_BUILD_MODE=release: CARLOS_SRC_SHA256 is unset — supply the pinned "
                 "tarball's sha256 (curl -sL <url> | sha256sum) so the in-image integrity "
@@ -182,7 +200,13 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         log("RELEASE build: refs commit-pinned, source checksums set; Maven "
             "dependency-lock enforced (CARLOS image; DrugRef has no lock profile)")
     else:
-        for name, ref in (("CARLOS_REF", carlos_ref), ("DRUGREF_REF", drugref_ref)):
+        # A WAR-artifact CARLOS build is sha256-verified in-image regardless
+        # of mode, so only a SOURCE build with a moving ref deserves the nag
+        # (auto pins are commit SHAs by construction and stay silent too).
+        unpinned = [("DRUGREF_REF", drugref_ref)]
+        if pin.artifact != "war":
+            unpinned.insert(0, ("CARLOS_REF", carlos_ref))
+        for name, ref in unpinned:
             if not _SHA40.match(ref):
                 warn(
                     f"{name}='{ref}' is not a full commit SHA — the source fetch is a moving, "
@@ -194,7 +218,7 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     # :latest moves for BOTH after BOTH succeed — a drugref build failure
     # must not leave a mismatched carlos:latest(new)/drugref:latest(old)
     # pair for the next play to deploy.
-    log(f"Building {carlos_repo}:build-{stamp} from carlos-emr/carlos@{carlos_ref}")
+    log(f"Building {carlos_repo}:build-{stamp} from carlos-emr/carlos {pin.describe()}")
     # CARLOS_SRC_SHA256/DRUGREF_SRC_SHA256 (empty by default) enable in-image
     # tarball integrity verification for audited release builds.
     # SOURCE_DATE_EPOCH is only forwarded when set — the Containerfile ARG
@@ -233,12 +257,25 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
             f"not baked into the runtime images)")
     else:
         ca_ctx.write_text("")  # self-heal: keep the placeholder present-but-empty
+    # WAR-artifact builds select the Containerfile's `download` stage (the
+    # published, sha256-verified release WAR) instead of the Maven compile;
+    # source builds pass nothing new so the ARG defaults keep selecting the
+    # compile stage — the manual QUICKSTART `podman build` recipe unchanged.
+    war_args = (
+        [
+            "--build-arg", f"CARLOS_WAR_URL={pin.war_url}",
+            "--build-arg", f"CARLOS_WAR_SHA256={pin.war_sha256}",
+            "--build-arg", "CARLOS_WAR_STAGE=download",
+        ]
+        if pin.artifact == "war" else []
+    )
     try:
         cp = runner.podman_user([
             "build", *cache_args, *format_args, *epoch_args, *ulimit_args,
             "--build-arg", f"CARLOS_REF={carlos_ref}",
             "--build-arg", f"CARLOS_SRC_SHA256={s.get('CARLOS_SRC_SHA256')}",
             "--build-arg", f"BUILD_DEP_LOCK={build_dep_lock}",
+            *war_args,
             # Names the build in the app's own buildVersion string, which
             # CARLOS renders on the login page — same stamp as the image tag
             # below, so the running page identifies its image. See the
@@ -351,13 +388,19 @@ def cmd_rebuild(runner: Runner, args: List[str]) -> int:
         "[--drugref-ref <branch|tag|sha>] [--pull]"
     )
     do_pull: List[str] = []
+    ref_override = False
     i = 0
     while i < len(args):
         a = args[i]
         if a == "--ref":
             if i + 1 >= len(args) or not args[i + 1]:
                 raise CtlError(usage)
-            s._vals["CARLOS_REF"] = args[i + 1]  # noqa: SLF001 — per-run override, as the bash did
+            # Per-run override, as the bash did: the value replaces CARLOS_REF
+            # for THIS invocation only — a non-`auto` value takes the manual
+            # path in source.resolve_for_build, so the sticky pin is neither
+            # consulted nor rewritten (the next plain build returns to it).
+            s._vals["CARLOS_REF"] = args[i + 1]  # noqa: SLF001
+            ref_override = True
             i += 2
         elif a == "--drugref-ref":
             if i + 1 >= len(args) or not args[i + 1]:
@@ -371,18 +414,29 @@ def cmd_rebuild(runner: Runner, args: List[str]) -> int:
             raise CtlError(usage)
     log("Rebuild: images only — the database, documents, and backups are not touched")
     cmd_build(runner, ["--no-cache"])
+    # What was just built, for the messages below: after cmd_build the pin
+    # exists (auto mode) or the manual ref passes straight through, so this
+    # re-read is offline — and it never prints the raw `auto` sentinel.
+    from . import source as source_mod
+
+    built = source_mod.resolve_for_build(runner).describe()
     # play's readiness gate (wait_app_ready) makes rc nonzero when the app
     # never turns healthy — a failed rebuild must not report "redeployed".
     if lifecycle2.cmd_play(runner, do_pull) != 0:
         raise CtlError(
             f"rebuild deployed but the app did NOT come up healthy — the new build is "
             f"suspect. 'carlos-ctl rollback' restores the previous images "
-            f"(carlos-emr/carlos@{s.get('CARLOS_REF')} remains tagged :latest until then)."
+            f"(carlos-emr/carlos {built} remains tagged :latest until then)."
         )
     log(
-        f"Rebuilt at carlos-emr/carlos@{s.get('CARLOS_REF')} (drugref@{s.get('DRUGREF_REF')}) "
+        f"Rebuilt carlos-emr/carlos {built} (drugref@{s.get('DRUGREF_REF')}) "
         f"and redeployed — validate with 'carlos-ctl check' ('carlos-ctl rollback' restores "
         f"the previous build)"
+        + (
+            ". NOTE: --ref is one-shot — the next plain build returns to the pinned "
+            "selection; 'carlos-ctl source set <ref>' makes it durable"
+            if ref_override else ""
+        )
     )
     return 0
 

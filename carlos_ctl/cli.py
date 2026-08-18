@@ -26,8 +26,15 @@ USAGE = """\
 carlos-ctl — CARLOS EMR pod runtime (app, obs, waf) under rootless podman
 
 APP LIFECYCLE (images + pod processes only — never db/documents/backups):
-  build [--use-cache]   build the CARLOS and DrugRef images from source
-  rebuild [--ref <ref>] [--drugref-ref <ref>] [--pull]   build fresh images and redeploy
+  build [--use-cache]   build the CARLOS and DrugRef images. The default
+                        (CARLOS_REF=auto) resolves the newest carlos-emr/carlos
+                        GitHub release (published WAR preferred, else source
+                        compile) on the FIRST build and PINS it — later builds
+                        stay on the pin until 'source update'
+  source [show|update|set <ref> [--artifact war|source]|clear]
+                        show/refresh/pin which CARLOS version + artifact builds use
+  rebuild [--ref <ref>] [--drugref-ref <ref>] [--pull]   build fresh images and
+                        redeploy (--ref is a ONE-SHOT override; the pin is untouched)
   play [--pull]         validate the rendered pod YAMLs and (re)start the pods
   rollback [--accept-schema-mismatch]   point the app images back at the previous
                         build and re-play (images only — does NOT reverse SQL
@@ -102,6 +109,14 @@ def _gating(verb: str, rest: List[str]) -> Tuple[bool, bool]:
         return True, True
     if verb == "backup":
         return rest[:1] == ["restore"], True
+    # `source` splits like `backup`: the writing sub-verbs rewrite the pin the
+    # NEXT build consumes (lock: an update racing a running build's resolve
+    # would interleave read-modify-write on the pin; banner: which instance's
+    # pin moved matters on a multi-instance host); bare `source`/`source show`
+    # is a read-only report.
+    if verb == "source":
+        writing = rest[:1] in (["update"], ["set"], ["clear"])
+        return writing, writing
     if verb == "db":
         return False, True
     return False, False
@@ -180,6 +195,10 @@ def _dispatch(verb: str, args: List[str], runner: Runner) -> int:
         from . import tlsops
 
         return tlsops.cmd_cert_renew(runner)
+    if verb == "source":
+        from . import source as source_mod
+
+        return source_mod.cmd_source(runner, args)
     if verb in ("build", "rebuild", "rollback", "play", "down", "enable", "check"):
         from . import build as build_mod
         from . import lifecycle2

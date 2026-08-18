@@ -373,6 +373,27 @@ class TestSettings:
         Settings({"EMR_HOME": str(home)})
         assert "does not read" not in capsys.readouterr().err
 
+    def test_source_selection_keys_are_registered(self, tmp_path: Path, capsys) -> None:
+        # The version/artifact selection surface: all readable from the env
+        # file without tripping the unknown-key warning, and the CARLOS_REF
+        # default is the `auto` sentinel (release-first sticky resolution) —
+        # env files that persist an explicit ref keep manual semantics.
+        from carlos_ctl.config import known_keys
+
+        assert {
+            "CARLOS_REF", "CARLOS_ARTIFACT", "CARLOS_SOURCE_BRANCH",
+            "CARLOS_WAR_URL", "CARLOS_WAR_SHA256",
+        } <= known_keys()
+        home = self._mk_home(
+            tmp_path,
+            "CARLOS_ARTIFACT=war\nCARLOS_SOURCE_BRANCH=develop\n"
+            "CARLOS_WAR_URL=https://x/x.war\nCARLOS_WAR_SHA256=" + "d" * 64 + "\n",
+        )
+        s = Settings({"EMR_HOME": str(home)})
+        assert "does not read" not in capsys.readouterr().err
+        assert s.get("CARLOS_REF") == "auto"
+        assert s.get("CARLOS_ARTIFACT") == "war"
+
     def test_journal_dir_env_file_knob(self, tmp_path: Path) -> None:
         # Operator knob JOURNAL_DIR (env-file, as the bash monitor read it);
         # the CARLOS_JOURNAL_DIR test override must still win.

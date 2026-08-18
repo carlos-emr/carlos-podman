@@ -105,3 +105,29 @@ class TestTargetBanner:
         # revisit the stream choice above, not to silently drop the
         # wrong-instance guard on the one verb that can import PHI.
         assert cli._gating("db", []) == (False, True)
+
+
+class TestSourceVerbGating:
+    """`source` splits like `backup`: the writing sub-verbs move the pin the
+    next build consumes (lock + banner), the report forms stay read-only."""
+
+    def test_writing_subverbs_lock_and_banner(self) -> None:
+        for sub in ("update", "set", "clear"):
+            assert cli._gating("source", [sub]) == (True, True)
+
+    def test_show_forms_are_read_only(self) -> None:
+        assert cli._gating("source", []) == (False, False)
+        assert cli._gating("source", ["show"]) == (False, False)
+
+    def test_source_dispatches_to_the_module(self, mk_settings, monkeypatch) -> None:
+        from carlos_ctl.runner import Runner
+
+        seen = {}
+        import carlos_ctl.source as source_mod
+
+        monkeypatch.setattr(
+            source_mod, "cmd_source",
+            lambda runner, args: seen.update(args=args) or 0,
+        )
+        assert cli._dispatch("source", ["show"], Runner(mk_settings())) == 0
+        assert seen["args"] == ["show"]

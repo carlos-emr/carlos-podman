@@ -248,7 +248,16 @@ cat <<EOF
 
 Setup complete. Next (QUICKSTART.md steps 1, 3-5):
 
-  1. build the image (if not done):
+  1. build the image (if not done) — QUICKSTART step 2 has both paths.
+     Preferred: a published release WAR (fast, sha256-verified):
+       CARLOS_TAG=<newest tag from api.github.com/repos/carlos-emr/carlos/releases>
+       WAR_URL=https://github.com/carlos-emr/carlos/releases/download/\$CARLOS_TAG/carlos-\$CARLOS_TAG.war
+       WAR_SHA=\$(curl -sL "\$WAR_URL.sha256" | cut -d' ' -f1)
+       podman build --no-cache --ulimit nofile=65536:65536 \\
+         --build-arg CARLOS_WAR_STAGE=download \\
+         --build-arg CARLOS_WAR_URL=\$WAR_URL --build-arg CARLOS_WAR_SHA256=\$WAR_SHA \\
+         -t localhost/carlos-app:latest -f Containerfile .
+     No release / compiling from source instead:
        CARLOS_SHA=\$(git ls-remote https://github.com/carlos-emr/carlos develop | cut -f1)
        podman build --no-cache --ulimit nofile=65536:65536 \\
          --build-arg CARLOS_REF=\$CARLOS_SHA \\

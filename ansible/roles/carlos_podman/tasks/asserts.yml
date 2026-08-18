@@ -469,6 +469,12 @@
         (hostvars[item]['carlos_ref'] | default(_role_defaults.carlos_ref))
         == carlos_ref
       - >-
+        (hostvars[item]['carlos_artifact'] | default(_role_defaults.carlos_artifact))
+        == carlos_artifact
+      - >-
+        (hostvars[item]['carlos_source_branch'] | default(_role_defaults.carlos_source_branch))
+        == carlos_source_branch
+      - >-
         (hostvars[item]['carlos_drugref_ref'] | default(_role_defaults.carlos_drugref_ref))
         == carlos_drugref_ref
     fail_msg: >-
@@ -477,9 +483,12 @@
       sibling
       '{{ hostvars[item]['carlos_instance'] | default(_role_defaults.carlos_instance) }}'
       on {{ ansible_host | default(inventory_hostname) }} but disagrees on
-      carlos_image/carlos_drugref_image/carlos_ref/carlos_drugref_ref — a
+      carlos_image/carlos_drugref_image/carlos_ref/carlos_artifact/
+      carlos_source_branch/carlos_drugref_ref — a
       `build` in one instance would silently retag what the other runs
-      (carlos-ctl build builds BOTH images from the per-instance refs). Align
+      (carlos-ctl build builds BOTH images from the per-instance refs, and
+      under carlos_ref=auto each instance also keeps its OWN source pin —
+      run `carlos-ctl source update` in lockstep across siblings). Align
       the image vars, or give each instance its own carlos_service_user.
   loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
   when:
