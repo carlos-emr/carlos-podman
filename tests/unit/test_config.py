@@ -383,16 +383,22 @@ class TestSettings:
         assert {
             "CARLOS_REF", "CARLOS_ARTIFACT", "CARLOS_SOURCE_BRANCH",
             "CARLOS_WAR_URL", "CARLOS_WAR_SHA256",
+            "DRUGREF_REF", "DRUGREF_ARTIFACT", "DRUGREF_SOURCE_BRANCH",
+            "DRUGREF_WAR_URL", "DRUGREF_WAR_SHA256",
         } <= known_keys()
         home = self._mk_home(
             tmp_path,
             "CARLOS_ARTIFACT=war\nCARLOS_SOURCE_BRANCH=develop\n"
-            "CARLOS_WAR_URL=https://x/x.war\nCARLOS_WAR_SHA256=" + "d" * 64 + "\n",
+            "CARLOS_WAR_URL=https://x/x.war\nCARLOS_WAR_SHA256=" + "d" * 64 + "\n"
+            "DRUGREF_ARTIFACT=source\nDRUGREF_SOURCE_BRANCH=master\n"
+            "DRUGREF_WAR_URL=https://x/drugref2.war\nDRUGREF_WAR_SHA256=" + "f" * 64 + "\n",
         )
         s = Settings({"EMR_HOME": str(home)})
         assert "does not read" not in capsys.readouterr().err
         assert s.get("CARLOS_REF") == "auto"
         assert s.get("CARLOS_ARTIFACT") == "war"
+        assert s.get("DRUGREF_REF") == "auto"
+        assert s.get("DRUGREF_ARTIFACT") == "source"
 
     def test_journal_dir_env_file_knob(self, tmp_path: Path) -> None:
         # Operator knob JOURNAL_DIR (env-file, as the bash monitor read it);

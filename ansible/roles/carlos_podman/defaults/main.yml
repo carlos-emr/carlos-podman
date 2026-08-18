@@ -279,26 +279,34 @@ carlos_load15_per_core_max: 2
 carlos_extra_env: {}
 
 # --- build refs -------------------------------------------------------------------
-# CARLOS version selection. `auto` (the default) makes the FIRST
-# `carlos-ctl build` resolve the newest carlos-emr/carlos GitHub release
-# (non-prerelease > prerelease > carlos_source_branch HEAD, by publish time)
-# and PIN it in $EMR_HOME/build/.source-pin — later builds stay on that pin,
-# with no network access, until `carlos-ctl source update` (or set/clear)
-# moves it. Any other value (branch/tag/40-hex sha) is a manual ref with the
-# historical build-from-source semantics: no API lookup, no pin. Installs
-# that want the pre-`auto` behavior back set `carlos_ref: develop`.
+# App version selection — the same contract for BOTH built apps. `auto` (the
+# default) makes the FIRST `carlos-ctl build` resolve the app's newest GitHub
+# release (non-prerelease > prerelease > its *_source_branch HEAD, by publish
+# time) and PIN it under $EMR_HOME/build/ (.source-pin for CARLOS,
+# .source-pin.drugref for DrugRef) — later builds stay on the pins, with no
+# network access, until `carlos-ctl source update` (or set/clear) moves them.
+# Any other value (branch/tag/40-hex sha) is a manual ref with the historical
+# build-from-source semantics: no API lookup, no pin — e.g. an operator who
+# wants to keep tracking a development branch sets `carlos_ref: develop` /
+# `carlos_drugref_ref: master` (or any other branch) explicitly.
 # NOTE: first resolve/update needs api.github.com reachability; air-gapped
-# hosts should pin a sha (`carlos-ctl source set <sha>`) or set a manual ref.
+# hosts should pin a sha (`carlos-ctl source set [--drugref] <sha>`) or set a
+# manual ref.
 carlos_ref: auto
-# Artifact for the selected version: `auto` uses the release's published
-# carlos-<tag>.war when one exists (sha256-verified in-image, no Maven
-# compile), else compiles that release's source; `war`/`source` force one
-# side. The choice made under `auto` is persisted in the source pin.
+# Artifact for the selected version: `auto` uses the release's published WAR
+# when one exists (sha256-verified in-image, no Maven compile — CARLOS
+# releases ship carlos-<tag>.war, DrugRef releases ship drugref2.war), else
+# compiles that release's source; `war`/`source` force one side. The choice
+# made under `auto` is persisted in the source pin.
 carlos_artifact: auto
 # The no-releases fallback branch for `auto` resolution (the app repo's
 # default branch — carlos-emr/carlos has no `main`).
 carlos_source_branch: develop
-carlos_drugref_ref: master
+# DrugRef: same three knobs, same semantics (drugref2026's default branch is
+# `master`).
+carlos_drugref_ref: auto
+carlos_drugref_artifact: auto
+carlos_drugref_source_branch: master
 
 # --- credentials ------------------------------------------------------------------
 # REQUIRED for provisioning (renders carlos.properties and the db secret).

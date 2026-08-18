@@ -158,25 +158,30 @@ _DEFAULTS: Dict[str, str] = {
     "HEARTBEAT_URL": "",
     "CERT_EXPIRY_WARN_DAYS": "21",
     "POD_DNS": "",
-    # CARLOS version selection. `auto` (the default) resolves the newest
-    # GitHub release of carlos-emr/carlos (non-prerelease > prerelease >
-    # CARLOS_SOURCE_BRANCH HEAD) on the FIRST build and pins the answer in
-    # $EMR_HOME/build/.source-pin — later builds stay on that pin, offline,
-    # until `carlos-ctl source update`/`set`/`clear`. Any other value is a
-    # manual ref (branch/tag/sha) with the historical build-from-source
-    # semantics; env files rendered before this default flip carry
-    # CARLOS_REF=develop and keep behaving exactly as they did. See
-    # carlos_ctl/source.py for the full contract.
+    # App version selection — the same contract for BOTH built apps (CARLOS
+    # and DrugRef), each under its own key prefix. `auto` (the default)
+    # resolves the newest GitHub release of the app's repo (non-prerelease >
+    # prerelease > <APP>_SOURCE_BRANCH HEAD) on the FIRST build and pins the
+    # answer under $EMR_HOME/build/ (.source-pin / .source-pin.drugref) —
+    # later builds stay on that pin, offline, until `carlos-ctl source
+    # update`/`set`/`clear`. Any other value is a manual ref (branch/tag/sha)
+    # with the historical build-from-source semantics — e.g. an operator who
+    # wants to keep tracking `develop`/`master` sets exactly that; env files
+    # rendered before this default flip carry explicit refs and keep behaving
+    # exactly as they did. See carlos_ctl/source.py for the full contract.
     "CARLOS_REF": "auto",
-    # Artifact for the selected version: `auto` prefers a release's published
-    # carlos-<tag>.war (sha256-verified, no Maven compile), falling back to a
+    # Artifact for the selected version: `auto` prefers the release's
+    # published WAR (sha256-verified, no Maven compile), falling back to a
     # source compile; `war`/`source` force one side. The auto choice is
     # persisted in the source pin like the version is.
     "CARLOS_ARTIFACT": "auto",
     # The no-releases fallback branch for auto resolution. The app repo's
     # default branch is `develop` (it has no `main`).
     "CARLOS_SOURCE_BRANCH": "develop",
-    "DRUGREF_REF": "master",
+    "DRUGREF_REF": "auto",
+    "DRUGREF_ARTIFACT": "auto",
+    # drugref2026's default branch is `master`.
+    "DRUGREF_SOURCE_BRANCH": "master",
     "CARLOS_SRC_SHA256": "",
     "DRUGREF_SRC_SHA256": "",
     "CARLOS_DB_ROOT_PASSWORD": "",
@@ -243,12 +248,13 @@ _EXTRA_KNOWN_KEYS = frozenset({
     # proxy still failed its Maven fetch — twenty minutes into the build, with
     # a bare PKIX error. Neither value is a secret (they are paths).
     "CARLOS_BUILD_DIR", "CARLOS_EXTRA_CA_BUNDLE",
-    # Manual/air-gapped WAR channel: with a manual CARLOS_REF and
-    # CARLOS_ARTIFACT=war, these name the WAR to download and its sha256
+    # Manual/air-gapped WAR channel: with a manual <APP>_REF and
+    # <APP>_ARTIFACT=war, these name the WAR to download and its sha256
     # (auto mode resolves both from the release and stores them in the source
     # pin instead). Public release-asset URLs/digests — deliberately NOT in
     # SECRET_ENV_KEYS, so the DR secrets-stripped env copy keeps them.
     "CARLOS_WAR_URL", "CARLOS_WAR_SHA256",
+    "DRUGREF_WAR_URL", "DRUGREF_WAR_SHA256",
     "CARLOS_RESTORE_ACCEPT_UNSHIPPED",
     "CARLOS_RESTORE_BASE_DUMP_ONLY",
     "CARLOS_RESTORE_CONFIRMED", "CARLOS_SEAL_NO_TPM",

@@ -322,8 +322,9 @@ def cmd_setup(runner: Runner) -> int:
   1. Review {target} (vault the db password: ansible-vault encrypt_string)
   2. Provision the host:      sudo ansible-playbook -i <inventory> ansible/site.yml
   3. Build images:            sudo EMR_HOME={emr_home} carlos-ctl build
-     (the first build resolves + PINS the newest CARLOS GitHub release,
-      published WAR preferred — 'carlos-ctl source' shows/changes the pin)
+     (the first build resolves + PINS the newest CARLOS and DrugRef GitHub
+      releases, published WARs preferred — 'carlos-ctl source' shows/changes
+      the pins)
   4. TLS ({tls_mode} mode): {tls_step}
   5. Start:                   sudo EMR_HOME={emr_home} carlos-ctl play && carlos-ctl check
   6. FRESH INSTALL ONLY — load the CARLOS schema before first login (reusing an

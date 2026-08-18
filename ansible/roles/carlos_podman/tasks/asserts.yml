@@ -477,6 +477,12 @@
       - >-
         (hostvars[item]['carlos_drugref_ref'] | default(_role_defaults.carlos_drugref_ref))
         == carlos_drugref_ref
+      - >-
+        (hostvars[item]['carlos_drugref_artifact'] | default(_role_defaults.carlos_drugref_artifact))
+        == carlos_drugref_artifact
+      - >-
+        (hostvars[item]['carlos_drugref_source_branch'] | default(_role_defaults.carlos_drugref_source_branch))
+        == carlos_drugref_source_branch
     fail_msg: >-
       instance '{{ carlos_instance }}' shares service user
       '{{ carlos_service_user }}' (one podman engine / image store) with
@@ -484,7 +490,8 @@
       '{{ hostvars[item]['carlos_instance'] | default(_role_defaults.carlos_instance) }}'
       on {{ ansible_host | default(inventory_hostname) }} but disagrees on
       carlos_image/carlos_drugref_image/carlos_ref/carlos_artifact/
-      carlos_source_branch/carlos_drugref_ref — a
+      carlos_source_branch/carlos_drugref_ref/carlos_drugref_artifact/
+      carlos_drugref_source_branch — a
       `build` in one instance would silently retag what the other runs
       (carlos-ctl build builds BOTH images from the per-instance refs, and
       under carlos_ref=auto each instance also keeps its OWN source pin —

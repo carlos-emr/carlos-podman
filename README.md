@@ -81,9 +81,9 @@ Files:
   PyYAML/bcrypt). Installed by the Ansible role to
   `/usr/local/lib/carlos-ctl/` with a `/usr/local/sbin/carlos-ctl` shim — no
   pip, no PyPI, no network at deploy time. Lifecycle-grouped verbs: `build` /
-  `source <show|update|set|clear>` (which CARLOS version + artifact builds
-  use — the release-first sticky pin, persisted at
-  `$EMR_HOME/build/.source-pin`) /
+  `source <show|update|set|clear>` (which CARLOS + DrugRef versions and
+  artifacts builds use — the release-first sticky pins, persisted at
+  `$EMR_HOME/build/.source-pin` and `.source-pin.drugref`) /
   `rebuild` / `play` / `rollback` / `down [--disable]` / `enable` (app
   lifecycle); `status` / `check` / `backup <full|binlogs|docs|verify|restore>`
   / `monitor` / `alert-test` (operations); `db` / `db-dump` / `db-backup` /
@@ -107,7 +107,8 @@ Files:
   `carlos-ctl build` via `CARLOS_WAR_STAGE=download`) — and bakes it into
   `tomcat:11.0-jdk21-temurin`
 - `Containerfile.drugref` — same pattern for DrugRef2026 (`drugref2.war`),
-  mirrors the upstream devcontainer's drugref service
+  including the release-WAR `download` stage; mirrors the upstream
+  devcontainer's drugref service
 - `conf/` — the **verbatim, operator-owned** conf files (installed once by
   the role with `force: false`, never overwritten): `tomcat/server.xml`
   (Tomcat **11** — the old OpenO-era `server.xml` targets an older Tomcat),
@@ -157,7 +158,7 @@ Files:
 - [phpMyAdmin (on-demand database admin)](#phpmyadmin-on-demand-database-admin)
 - [Secrets](#secrets)
 - [Opt-in hardening & data-integrity knobs](#opt-in-hardening--data-integrity-knobs)
-- [Choosing the CARLOS version](#choosing-the-carlos-version)
+- [Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)
 - [Updating](#updating)
 - [Backups (restic)](#backups-restic)
 - [Alerting & health monitoring](#alerting--health-monitoring)
@@ -229,13 +230,14 @@ sudo ansible-playbook -i inventory ansible/site.yml
 #    (re)generates one that is missing or an expired self-issued pair.
 
 # 5. Build the CARLOS and DrugRef images. The role installed the build
-#    context to $EMR_HOME/build/. The FIRST build resolves the newest
-#    carlos-emr/carlos GitHub release (newest non-prerelease by publish
-#    time > newest prerelease > develop HEAD), prefers its published WAR
-#    (sha256-verified — skips the long Maven compile), and PINS the choice
-#    in $EMR_HOME/build/.source-pin: later builds stay on that pin, offline,
-#    until `carlos-ctl source update` moves it. `carlos-ctl source` shows
-#    what is pinned; see "Choosing the CARLOS version" below.
+#    context to $EMR_HOME/build/. The FIRST build resolves EACH app's newest
+#    GitHub release (newest non-prerelease by publish time > newest
+#    prerelease > its default-branch HEAD), prefers the release's published
+#    WAR (sha256-verified — skips the long Maven compile), and PINS the
+#    choices in $EMR_HOME/build/ (.source-pin, .source-pin.drugref): later
+#    builds stay on those pins, offline, until `carlos-ctl source update`
+#    moves them. `carlos-ctl source` shows what is pinned; see "Choosing the
+#    CARLOS and DrugRef versions" below.
 sudo EMR_HOME=/usr/local/emr carlos-ctl build
 
 # 6. Start, then validate the running deployment end to end. `play`
@@ -1127,7 +1129,9 @@ survive a disable/enable round trip.
 
 Drug and interaction lookups run in the pod's `drugref` container, built by
 `carlos-ctl build` from
-[carlos-emr/drugref2026](https://github.com/carlos-emr/drugref2026) — the
+[carlos-emr/drugref2026](https://github.com/carlos-emr/drugref2026) (version
+and WAR/source artifact selected exactly like CARLOS's — see
+[Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)) — the
 same source and layout the upstream devcontainer uses
 (`.devcontainer/drugref/`). Wiring:
 
@@ -1860,60 +1864,76 @@ pin it explicitly if you ever split app and db hosts. `wait_timeout` is
 600s — if you tune the app's connection pool, keep its idle-validation
 under that or raise `wait_timeout` alongside.
 
-## Choosing the CARLOS version
+## Choosing the CARLOS and DrugRef versions
 
-Which CARLOS the images carry — and whether the build compiles it or uses a
-published WAR — is governed by three vars (host_vars → rendered into
-`carlos-app.env`) plus one persisted **pin**:
+Which CARLOS and DrugRef the images carry — and whether each build compiles
+its source or uses a published WAR — is governed by three vars **per app**
+(host_vars → rendered into `carlos-app.env`) plus one persisted **pin** per
+app. The contract is identical for both; DrugRef simply uses its own keys
+(`carlos_drugref_ref` / `carlos_drugref_artifact` /
+`carlos_drugref_source_branch` → `DRUGREF_*`) and its own pin file:
 
-- **`carlos_ref: auto`** (the default). The first `carlos-ctl build` resolves
-  the newest `carlos-emr/carlos` **GitHub release** — newest non-prerelease
-  by publish time, else the newest prerelease, else the HEAD of
-  `carlos_source_branch` (default `develop`, the app repo's default branch) —
-  and **pins** the answer in `$EMR_HOME/build/.source-pin`. The pin records
-  the release tag AND its commit SHA (tags are mutable; nothing downstream
-  trusts one), so **every later build is offline and identical** until an
-  operator moves the pin. Any other `carlos_ref` value (branch/tag/40-hex
-  SHA) is a manual ref with the historical build-from-source semantics — no
-  API lookup, no pin.
-- **`carlos_artifact: auto`** (the default). A pinned release that publishes
-  `carlos-<tag>.war` deploys that WAR — sha256-verified in-image against the
-  release's published digest, no Maven compile (minutes instead of ~20) —
-  else the build compiles that exact release's source. `war` / `source`
-  force one side; the choice made under `auto` is persisted in the pin.
-  (In WAR mode the login page shows the release's own buildVersion, not a
-  local build stamp.)
-- **`carlos_source_branch: develop`** — only used by the no-releases
-  fallback.
+- **`carlos_ref: auto` / `carlos_drugref_ref: auto`** (the defaults). The
+  first `carlos-ctl build` resolves each app's newest **GitHub release** —
+  newest non-prerelease by publish time, else the newest prerelease, else
+  the HEAD of the app's `*_source_branch` (`develop` for `carlos-emr/carlos`,
+  `master` for `carlos-emr/drugref2026` — each repo's default branch) — and
+  **pins** the answers in `$EMR_HOME/build/.source-pin` (CARLOS) and
+  `$EMR_HOME/build/.source-pin.drugref` (DrugRef). A pin records the release
+  tag AND its commit SHA (tags are mutable; nothing downstream trusts one),
+  so **every later build is offline and identical** until an operator moves
+  the pin. Any other ref value (branch/tag/40-hex SHA) is a manual ref with
+  the historical build-from-source semantics — no API lookup, no pin. An
+  operator who wants to keep tracking a development branch does exactly
+  that: `carlos_ref: develop` and/or `carlos_drugref_ref: master` (or any
+  other branch name).
+- **`carlos_artifact: auto` / `carlos_drugref_artifact: auto`** (the
+  defaults). A pinned release that publishes a WAR deploys that WAR —
+  sha256-verified in-image against the release's published digest, no Maven
+  compile — else the build compiles that exact release's source. CARLOS
+  releases ship `carlos-<tag>.war`; DrugRef releases ship `drugref2.war`.
+  `war` / `source` force one side per app; the choice made under `auto` is
+  persisted in that app's pin. (In WAR mode the CARLOS login page shows the
+  release's own buildVersion, not a local build stamp.)
+- **`carlos_source_branch: develop` / `carlos_drugref_source_branch:
+  master`** — only used by each app's no-releases fallback.
 
-Day to day:
+Day to day (`--drugref` targets the DrugRef pin; without it, CARLOS):
 
 ```bash
-carlos-ctl source            # what is pinned, and what the next build does
-carlos-ctl source update     # re-resolve to the newest release, move the pin
-carlos-ctl source set 2026.08.0            # pin a specific release (WAR-first)
+carlos-ctl source            # both pins, and what the next build does
+carlos-ctl source update     # re-resolve BOTH apps to their newest releases
+carlos-ctl source set 2026.08.0                     # pin a CARLOS release (WAR-first)
 carlos-ctl source set 2026.08.0 --artifact source   # …but compile it
-carlos-ctl source set <40-hex-sha>         # pin a commit, offline (source build)
-carlos-ctl source clear      # forget the pin; next build re-resolves
+carlos-ctl source set <40-hex-sha>                  # pin a CARLOS commit, offline
+carlos-ctl source set --drugref v1.0.0rc2           # pin a DrugRef release
+carlos-ctl source set --drugref master              # pin DrugRef master's CURRENT head
+carlos-ctl source clear      # forget both pins; next build re-resolves
 ```
 
+(`source set <branch>` is the manual-but-sticky middle ground: it pins that
+branch's head **as of now**, so the deployment still doesn't drift until the
+next `source update`/`set`. A manual `*_ref: <branch>` in host_vars instead
+re-fetches the branch tip on every build — the historical behavior.)
+
 `source update`/`set` and the first unpinned build are the ONLY things that
-touch the GitHub API (unauthenticated quota: 60 requests/hour; ≤3 calls
-each). A pinned build makes **zero** network calls beyond the artifact fetch
-itself, so an air-gapped host works by pinning once (`source set <sha>`, or a
-manual `carlos_ref`) — if resolution is needed but unreachable, `build`
-refuses with exactly that guidance. One more edge: a pin taken between
-"release published" and "WAR uploaded" records a source build — `source
-update` re-resolves it.
+touch the GitHub API (unauthenticated quota: 60 requests/hour; a handful of
+calls each). A pinned build makes **zero** network calls beyond the artifact
+fetch itself, so an air-gapped host works by pinning once (`source set
+[--drugref] <sha>`, or manual refs) — if resolution is needed but
+unreachable, `build` refuses with exactly that guidance. One more edge: a
+pin taken between "release published" and "WAR uploaded" records a source
+build — `source update` re-resolves it.
 
 **Upgrade note (default flip):** installs provisioned before this feature
-rendered `CARLOS_REF=develop`, and any explicit value keeps exactly that
-behavior. But a host_vars file that never set `carlos_ref` flips to `auto`
-(release-first) at its next playbook run + build — set `carlos_ref: develop`
-to keep tracking the branch instead. Multi-instance hosts sharing one
-service user share one image store: keep sibling pins aligned (run `source
-update` in lockstep), as the provisioning assert already requires for the
-vars.
+rendered `CARLOS_REF=develop` and `DRUGREF_REF=master`, and any explicit
+value keeps exactly that behavior. But a host_vars file that never set
+`carlos_ref`/`carlos_drugref_ref` flips to `auto` (release-first) at its
+next playbook run + build — set `carlos_ref: develop` /
+`carlos_drugref_ref: master` to keep tracking the branches instead.
+Multi-instance hosts sharing one service user share one image store: keep
+sibling pins aligned (run `source update` in lockstep), as the provisioning
+assert already requires for the vars.
 
 ## Updating
 
@@ -1934,18 +1954,18 @@ operator-owned file flows `edit the file → carlos-ctl play`.
   `CARLOS_ALLOW_STALE_IMAGES=1` overrides). Third-party images are
   digest-pinned in `defaults/main.yml`, so bumping one is an edit to the pin
   plus playbook + `play --pull`.
-- **Deploy a new (or rebuild the current) CARLOS version.** The normal
-  flow under the default `carlos_ref: auto` is
-  `carlos-ctl source update && carlos-ctl rebuild` — update moves the pin to
-  the newest release (nothing changes without it; see
-  [Choosing the CARLOS version](#choosing-the-carlos-version)), rebuild
-  builds and redeploys it. `carlos-ctl source` answers "what am I running /
-  about to build". `carlos-ctl rebuild [--ref <branch|tag|sha>]
-  [--drugref-ref <branch|tag|sha>]` remains the escape hatch: `--ref` is a
-  **one-shot** override (the pin is untouched — the next plain build returns
-  to it; `carlos-ctl source set <ref>` makes it durable) and `--drugref-ref`
-  pins the DrugRef version independently; no flag rebuilds the pinned (or
-  manual `CARLOS_REF`) selection (the build always runs `--no-cache`,
+- **Deploy a new (or rebuild the current) CARLOS/DrugRef version.** The
+  normal flow under the default `auto` refs is
+  `carlos-ctl source update && carlos-ctl rebuild` — update moves both pins
+  to the newest releases (nothing changes without it; see
+  [Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)),
+  rebuild builds and redeploys them. `carlos-ctl source` answers "what am I
+  running / about to build". `carlos-ctl rebuild [--ref <branch|tag|sha>]
+  [--drugref-ref <branch|tag|sha>]` remains the escape hatch: both flags are
+  **one-shot** overrides (the pins are untouched — the next plain build
+  returns to them; `carlos-ctl source set [--drugref] <ref>` makes one
+  durable); no flag rebuilds the pinned (or manual `CARLOS_REF`/
+  `DRUGREF_REF`) selections (the build always runs `--no-cache`,
   so a same-ref rebuild can never ship a stale cached source tarball; the
   Maven `.m2` cache stays warm). Images and pod processes only — **the
   database, documents, and backups are never touched.** `play` (and
@@ -2903,12 +2923,12 @@ mariadb, restic, exporters, vector, caddy, victoria*, vmalert), and
 `carlos-ctl build` runs `--no-cache` by default so a same-ref rebuild can
 never ship a stale cached source tarball (`--use-cache` opts back in for
 pinned-SHA iteration). What remains site policy: under the
-default `carlos_ref: auto` the CARLOS source is a **pinned release commit**
-(and a WAR build verifies the release asset's sha256 in-image — for the
-CARLOS image that published digest IS the content checksum), but
-`carlos_drugref_ref` still defaults to a moving branch (`master`) and a
-manual `carlos_ref` may too — `build` warns whenever a SOURCE-compiled ref is
-not a full commit SHA. For a reproducible, audited release build:
+default `auto` refs both app sources are **pinned release commits** (and a
+WAR build verifies the release asset's sha256 in-image — for that image the
+published digest IS the content checksum), but a manual `carlos_ref`/
+`carlos_drugref_ref` may name a moving branch — `build` warns whenever a
+SOURCE-compiled ref is not a full commit SHA. For a reproducible, audited
+release build:
 
 1. pin `carlos_ref`/`carlos_drugref_ref` to full commit SHAs (deterministic
    sources),
@@ -2924,11 +2944,12 @@ The fastest path to all three is **`CARLOS_BUILD_MODE=release`**: `carlos-ctl
 build` then **hard-fails** unless every source-compiled ref is a 40-hex
 commit SHA with its `*_SRC_SHA256` set, and forces `BUILD_DEP_LOCK=1` —
 turning the three warn-only layers above into a single gate. A WAR-artifact
-CARLOS build satisfies the gate differently: it requires the pinned WAR
-sha256 (verified in-image) instead of `CARLOS_SRC_SHA256`, and the
-dependency lock covers only what actually compiles (DrugRef; the CARLOS
-compile is skipped). `SOURCE_DATE_EPOCH` is still required — it pins the
-DrugRef compile's timestamps. Without it (the default), builds
+build (either app) satisfies the gate differently: it requires that app's
+pinned WAR sha256 (verified in-image) instead of its `*_SRC_SHA256`, and the
+compile-only layers apply only to images that actually compile (the
+dependency-lock profile exists in the CARLOS pom only; DrugRef has none).
+`SOURCE_DATE_EPOCH` is required whenever anything compiles — an all-WAR
+release build runs no compiler and needs no timestamp pin. Without it (the default), builds
 stay on `develop`/`master` and only warn. Redeploy a specific pair with
 `carlos-ctl rebuild --ref <sha> --drugref-ref <sha>`. (`build` reads its
 context from `$EMR_HOME/build/` — installed by the role — or a repo checkout

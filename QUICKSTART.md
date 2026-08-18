@@ -130,7 +130,7 @@ cd carlos-podman
 CARLOS publishes GitHub releases, and a release usually ships a prebuilt
 `carlos-<tag>.war` — using it skips the long Maven compile. List the releases
 and pick the newest one (the full Ansible deployment automates exactly this
-policy; see the README's "Choosing the CARLOS version"):
+policy; see the README's "Choosing the CARLOS and DrugRef versions"):
 
 ```bash
 curl -s https://api.github.com/repos/carlos-emr/carlos/releases \
@@ -492,11 +492,13 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl build
 sudo EMR_HOME=/usr/local/emr carlos-ctl play
 ```
 
-The first `build` resolves the newest CARLOS GitHub release (preferring its
-published, sha256-verified WAR over a source compile), prints what it chose,
-and pins it — later builds stay on that pin until `carlos-ctl source update`.
-`carlos-ctl source` shows the pin; the README's "Choosing the CARLOS version"
-section covers manual pinning and air-gapped hosts.
+The first `build` resolves the newest CARLOS **and** DrugRef GitHub releases
+(preferring each release's published, sha256-verified WAR over a source
+compile), prints what it chose, and pins both — later builds stay on those
+pins until `carlos-ctl source update`. `carlos-ctl source` shows the pins;
+the README's "Choosing the CARLOS and DrugRef versions" section covers
+manual pinning (including tracking a development branch deliberately) and
+air-gapped hosts.
 
 On a new database, the first `play` is expected to return nonzero after starting
 the database because the CARLOS and DrugRef schemas do not exist yet. This

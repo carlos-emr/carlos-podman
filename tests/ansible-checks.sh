@@ -329,7 +329,8 @@ echo "==> source selection: the default render carries the auto version/artifact
 # CLI's resolver reads CARLOS_ARTIFACT/CARLOS_SOURCE_BRANCH from the same
 # render — a template that drops one silently reverts an instance to manual
 # semantics (or the built-in default) on the next playbook run.
-for want in "^CARLOS_REF=auto" "^CARLOS_ARTIFACT=auto" "^CARLOS_SOURCE_BRANCH=develop"; do
+for want in "^CARLOS_REF=auto" "^CARLOS_ARTIFACT=auto" "^CARLOS_SOURCE_BRANCH=develop" \
+            "^DRUGREF_REF=auto" "^DRUGREF_ARTIFACT=auto" "^DRUGREF_SOURCE_BRANCH=master"; do
     if ! grep -q "$want" "$WORK/render-on/carlos-app.env"; then
         echo "FAIL: the default render is missing '$want' in carlos-app.env"
         fail=1

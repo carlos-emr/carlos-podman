@@ -137,81 +137,82 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     drugref_image = s.get("DRUGREF_IMAGE")
     carlos_repo = carlos_image.rsplit(":", 1)[0]
     drugref_repo = drugref_image.rsplit(":", 1)[0]
-    # WHICH CARLOS to build, and from which artifact: the historical manual
-    # CARLOS_REF passthrough, or (CARLOS_REF=auto, the default) the sticky
-    # release-first pin — resolved via the GitHub API exactly once, then read
-    # offline from $EMR_HOME/build/.source-pin. See carlos_ctl/source.py.
+    # WHICH versions to build, and from which artifacts: per app, the
+    # historical manual <APP>_REF passthrough, or (<APP>_REF=auto, the
+    # default) the sticky release-first pin — resolved via the GitHub API
+    # exactly once, then read offline from $EMR_HOME/build/.source-pin[.
+    # drugref]. See carlos_ctl/source.py.
     from . import source as source_mod
 
-    pin = source_mod.resolve_for_build(runner)
+    pin = source_mod.resolve_for_build(runner, source_mod.CARLOS)
+    dpin = source_mod.resolve_for_build(runner, source_mod.DRUGREF)
     carlos_ref = pin.ref
-    drugref_ref = s.get("DRUGREF_REF")
+    drugref_ref = dpin.ref
 
     # Supply-chain gate. A branch name is a MOVING ref — the fetched tarball
     # has no checksum, so what gets built is whatever the branch points at
     # right now. DEV mode (default): warn only. RELEASE mode
     # (CARLOS_BUILD_MODE=release): HARD-FAIL unless every source is pinned to
     # a 40-hex commit SHA AND its content is checksummed AND the Maven
-    # dependency-lock is enforced. For a WAR-artifact CARLOS build the
-    # published WAR's sha256 (verified in-image) IS the content checksum, and
-    # the compile-only layers (source tarball sha256, dependency lock) do not
-    # apply to the CARLOS image — the lock still governs the DrugRef compile.
+    # dependency-lock is enforced. For a WAR-artifact build (either app) the
+    # published WAR's sha256 (verified in-image) IS that image's content
+    # checksum, and the compile-only layers (source tarball sha256, the lock,
+    # SOURCE_DATE_EPOCH) apply only to images that actually compile.
     build_dep_lock = "0"
+    gated = (("CARLOS", pin), ("DRUGREF", dpin))
     if s.get("CARLOS_BUILD_MODE") == "release":
         build_dep_lock = "1"
-        gated_refs = [("DRUGREF_REF", drugref_ref)]
-        if pin.artifact != "war":
-            gated_refs.insert(0, ("CARLOS_REF", carlos_ref))
-        for name, ref in gated_refs:
-            if not _SHA40.match(ref):
+        for prefix, p in gated:
+            if p.artifact == "war":
+                if not p.war_sha256:
+                    raise CtlError(
+                        f"CARLOS_BUILD_MODE=release: the {prefix} WAR artifact has no "
+                        f"sha256 to verify — re-resolve ('carlos-ctl source update') "
+                        f"or set {prefix}_WAR_SHA256"
+                    )
+                continue
+            if not _SHA40.match(p.ref):
                 raise CtlError(
-                    f"CARLOS_BUILD_MODE=release: {name}='{ref}' is not a full 40-hex commit "
-                    f"SHA — a release build must pin an immutable, auditable source ref"
+                    f"CARLOS_BUILD_MODE=release: {prefix}_REF='{p.ref}' is not a full "
+                    f"40-hex commit SHA — a release build must pin an immutable, "
+                    f"auditable source ref"
                 )
-        if pin.artifact == "war" and not pin.war_sha256:
-            raise CtlError(
-                "CARLOS_BUILD_MODE=release: the WAR artifact has no sha256 to verify — "
-                "re-resolve ('carlos-ctl source update') or set CARLOS_WAR_SHA256"
-            )
-        if pin.artifact != "war" and not s.get("CARLOS_SRC_SHA256"):
-            raise CtlError(
-                "CARLOS_BUILD_MODE=release: CARLOS_SRC_SHA256 is unset — supply the pinned "
-                "tarball's sha256 (curl -sL <url> | sha256sum) so the in-image integrity "
-                "check runs"
-            )
-        if not s.get("DRUGREF_SRC_SHA256"):
-            raise CtlError(
-                "CARLOS_BUILD_MODE=release: DRUGREF_SRC_SHA256 is unset — supply the pinned "
-                "DrugRef tarball's sha256"
-            )
+            if not s.get(f"{prefix}_SRC_SHA256"):
+                raise CtlError(
+                    f"CARLOS_BUILD_MODE=release: {prefix}_SRC_SHA256 is unset — supply "
+                    f"the pinned tarball's sha256 (curl -sL <url> | sha256sum) so the "
+                    f"in-image integrity check runs"
+                )
         # The Containerfiles' SOURCE_DATE_EPOCH plumbing is inert unless a
-        # value is actually passed — a release build claiming
-        # auditability must pin its build timestamp too, or two "identical"
-        # release builds diverge on embedded times.
-        if not s.get("SOURCE_DATE_EPOCH"):
+        # value is actually passed — a release build claiming auditability
+        # must pin its build timestamp too, or two "identical" release builds
+        # diverge on embedded times. Compile-only: an all-WAR release build
+        # runs no compiler, so there is no local timestamp to pin.
+        if any(p.artifact != "war" for _, p in gated) and not s.get("SOURCE_DATE_EPOCH"):
             raise CtlError(
                 "CARLOS_BUILD_MODE=release: SOURCE_DATE_EPOCH is unset — pin the build "
                 "timestamp (e.g. the source commit's: git show -s --format=%ct <sha>) "
                 "so release builds are time-reproducible"
             )
-        # DrugRef's Containerfile has no Maven dependency-lock profile, so the
-        # lock enforcement covers the CARLOS image only — say so rather than
-        # imply both.
-        log("RELEASE build: refs commit-pinned, source checksums set; Maven "
-            "dependency-lock enforced (CARLOS image; DrugRef has no lock profile)")
+        # The dependency-lock profile exists in the CARLOS pom only, and only
+        # matters when the CARLOS image actually compiles — say precisely
+        # what is enforced rather than imply more.
+        lock_note = (
+            "Maven dependency-lock enforced (CARLOS compile; DrugRef has no lock profile)"
+            if pin.artifact != "war"
+            else "no local compile for CARLOS (published WAR verified by sha256)"
+        )
+        log(f"RELEASE build: every source commit-pinned and content-checksummed; {lock_note}")
     else:
-        # A WAR-artifact CARLOS build is sha256-verified in-image regardless
-        # of mode, so only a SOURCE build with a moving ref deserves the nag
+        # A WAR-artifact build is sha256-verified in-image regardless of
+        # mode, so only a SOURCE build with a moving ref deserves the nag
         # (auto pins are commit SHAs by construction and stay silent too).
-        unpinned = [("DRUGREF_REF", drugref_ref)]
-        if pin.artifact != "war":
-            unpinned.insert(0, ("CARLOS_REF", carlos_ref))
-        for name, ref in unpinned:
-            if not _SHA40.match(ref):
+        for prefix, p in gated:
+            if p.artifact != "war" and not _SHA40.match(p.ref):
                 warn(
-                    f"{name}='{ref}' is not a full commit SHA — the source fetch is a moving, "
-                    f"unverifiable ref; pin a 40-hex commit and set CARLOS_BUILD_MODE=release "
-                    f"for an audited build"
+                    f"{prefix}_REF='{p.ref}' is not a full commit SHA — the source fetch "
+                    f"is a moving, unverifiable ref; pin a 40-hex commit and set "
+                    f"CARLOS_BUILD_MODE=release for an audited build"
                 )
 
     # Build-then-PROMOTE: both images build under :build-<stamp> only, and
@@ -257,7 +258,7 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
             f"not baked into the runtime images)")
     else:
         ca_ctx.write_text("")  # self-heal: keep the placeholder present-but-empty
-    # WAR-artifact builds select the Containerfile's `download` stage (the
+    # WAR-artifact builds select the Containerfiles' `download` stage (the
     # published, sha256-verified release WAR) instead of the Maven compile;
     # source builds pass nothing new so the ARG defaults keep selecting the
     # compile stage — the manual QUICKSTART `podman build` recipe unchanged.
@@ -268,6 +269,14 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
             "--build-arg", "CARLOS_WAR_STAGE=download",
         ]
         if pin.artifact == "war" else []
+    )
+    drugref_war_args = (
+        [
+            "--build-arg", f"DRUGREF_WAR_URL={dpin.war_url}",
+            "--build-arg", f"DRUGREF_WAR_SHA256={dpin.war_sha256}",
+            "--build-arg", "DRUGREF_WAR_STAGE=download",
+        ]
+        if dpin.artifact == "war" else []
     )
     try:
         cp = runner.podman_user([
@@ -286,11 +295,13 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         ])
         if cp.returncode != 0:
             raise CtlError(f"build failed for {carlos_image}")
-        log(f"Building {drugref_repo}:build-{stamp} from carlos-emr/drugref2026@{drugref_ref}")
+        log(f"Building {drugref_repo}:build-{stamp} from carlos-emr/drugref2026 "
+            f"{dpin.describe()}")
         cp = runner.podman_user([
             "build", *cache_args, *format_args, *epoch_args, *ulimit_args,
             "--build-arg", f"DRUGREF_REF={drugref_ref}",
             "--build-arg", f"DRUGREF_SRC_SHA256={s.get('DRUGREF_SRC_SHA256')}",
+            *drugref_war_args,
             "-t", f"{drugref_repo}:build-{stamp}",
             "-f", str(here / "Containerfile.drugref"), str(here),
         ])
@@ -405,7 +416,10 @@ def cmd_rebuild(runner: Runner, args: List[str]) -> int:
         elif a == "--drugref-ref":
             if i + 1 >= len(args) or not args[i + 1]:
                 raise CtlError(usage)
+            # One-shot like --ref: the DrugRef pin is neither consulted nor
+            # rewritten for this run.
             s._vals["DRUGREF_REF"] = args[i + 1]  # noqa: SLF001
+            ref_override = True
             i += 2
         elif a == "--pull":
             do_pull = ["--pull"]
@@ -419,7 +433,8 @@ def cmd_rebuild(runner: Runner, args: List[str]) -> int:
     # re-read is offline — and it never prints the raw `auto` sentinel.
     from . import source as source_mod
 
-    built = source_mod.resolve_for_build(runner).describe()
+    built = source_mod.resolve_for_build(runner, source_mod.CARLOS).describe()
+    dbuilt = source_mod.resolve_for_build(runner, source_mod.DRUGREF).describe()
     # play's readiness gate (wait_app_ready) makes rc nonzero when the app
     # never turns healthy — a failed rebuild must not report "redeployed".
     if lifecycle2.cmd_play(runner, do_pull) != 0:
@@ -429,12 +444,13 @@ def cmd_rebuild(runner: Runner, args: List[str]) -> int:
             f"(carlos-emr/carlos {built} remains tagged :latest until then)."
         )
     log(
-        f"Rebuilt carlos-emr/carlos {built} (drugref@{s.get('DRUGREF_REF')}) "
+        f"Rebuilt carlos-emr/carlos {built} (drugref2026 {dbuilt}) "
         f"and redeployed — validate with 'carlos-ctl check' ('carlos-ctl rollback' restores "
         f"the previous build)"
         + (
-            ". NOTE: --ref is one-shot — the next plain build returns to the pinned "
-            "selection; 'carlos-ctl source set <ref>' makes it durable"
+            ". NOTE: --ref/--drugref-ref are one-shot — the next plain build returns "
+            "to the pinned selection; 'carlos-ctl source set [--drugref] <ref>' makes "
+            "it durable"
             if ref_override else ""
         )
     )

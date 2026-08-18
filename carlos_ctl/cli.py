@@ -27,14 +27,16 @@ carlos-ctl — CARLOS EMR pod runtime (app, obs, waf) under rootless podman
 
 APP LIFECYCLE (images + pod processes only — never db/documents/backups):
   build [--use-cache]   build the CARLOS and DrugRef images. The default
-                        (CARLOS_REF=auto) resolves the newest carlos-emr/carlos
-                        GitHub release (published WAR preferred, else source
-                        compile) on the FIRST build and PINS it — later builds
-                        stay on the pin until 'source update'
-  source [show|update|set <ref> [--artifact war|source]|clear]
-                        show/refresh/pin which CARLOS version + artifact builds use
+                        (CARLOS_REF=auto / DRUGREF_REF=auto) resolves each app's
+                        newest GitHub release (published WAR preferred, else
+                        source compile) on the FIRST build and PINS it — later
+                        builds stay on the pins until 'source update'
+  source [show|update|set [--drugref] <ref> [--artifact war|source]|clear]
+                        show/refresh/pin which CARLOS + DrugRef versions and
+                        artifacts builds use
   rebuild [--ref <ref>] [--drugref-ref <ref>] [--pull]   build fresh images and
-                        redeploy (--ref is a ONE-SHOT override; the pin is untouched)
+                        redeploy (both ref flags are ONE-SHOT overrides; the
+                        pins are untouched)
   play [--pull]         validate the rendered pod YAMLs and (re)start the pods
   rollback [--accept-schema-mismatch]   point the app images back at the previous
                         build and re-play (images only — does NOT reverse SQL

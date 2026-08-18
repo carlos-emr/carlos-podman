@@ -155,7 +155,9 @@ CARLOS_TLS_MODE=manual
 CARLOS_REF=auto
 CARLOS_ARTIFACT=auto
 CARLOS_SOURCE_BRANCH=develop
-DRUGREF_REF=master
+DRUGREF_REF=auto
+DRUGREF_ARTIFACT=auto
+DRUGREF_SOURCE_BRANCH=master
 EOF
     chmod 0600 "$home/container/carlos-app.env"
     printf 'db_username=carlos\ndb_password=app-pw\n' > "$home/container/conf/carlos/carlos.properties"
@@ -406,8 +408,15 @@ cp "$WORK/subid-wide/subuid" "$WORK/subid-wide/subgid"
 refute "a full-width grant produces no subid warning" \
     bash -c "cd '$ROOT' && CARLOS_SUBID_DIR='$WORK/subid-wide' EMR_HOME='$HBD' \
         python3 -m carlos_ctl.cli build 2>&1 | grep -q 'sub-ids\|subuids\|subgids'"
+# Manual moving refs written into the env FILE (it wins over process env):
+# under the auto default this home would resolve pinned WAR releases, which
+# legitimately SATISFY release mode — the refusal under test is specifically
+# a manual moving-branch source ref.
+HRELREF="$WORK/h-relref"; mk_home "$HRELREF"
+touch "$HRELREF/build/Containerfile" "$HRELREF/build/Containerfile.drugref"
+printf 'CARLOS_REF=develop\nDRUGREF_REF=master\n' >> "$HRELREF/container/carlos-app.env"
 refute "release mode refuses a moving (non-40-hex) source ref" \
-    ctle "$HBD" CARLOS_BUILD_MODE=release -- build
+    ctle "$HRELREF" CARLOS_BUILD_MODE=release -- build
 assert "rollback retags both images and re-plays" ctl "$HBD" rollback
 refute "rollback refuses when drugref :previous is missing (lockstep guard)" \
     ctle "$HBD" STUB_NO_DRUGREF_PREV=1 -- rollback
@@ -430,13 +439,23 @@ assert "the published WAR selects the download stage" \
     log_since "$m" "CARLOS_WAR_STAGE=download"
 assert "the WAR sha256 rides along for the in-image verification" \
     log_since "$m" "CARLOS_WAR_SHA256=dddddddddddddddddddddddddddddddd"
+# DrugRef rides the SAME contract under its own keys and pin.
+assert "the DrugRef source pin was persisted" test -s "$HSRC/build/.source-pin.drugref"
+assert "the pinned DrugRef release COMMIT drives DRUGREF_REF" \
+    log_since "$m" "DRUGREF_REF=3333333333333333333333333333333333333333"
+assert "the DrugRef published WAR selects its download stage" \
+    log_since "$m" "DRUGREF_WAR_STAGE=download"
+assert "the DrugRef WAR sha256 rides along" \
+    log_since "$m" "DRUGREF_WAR_SHA256=ffffffffffffffffffffffffffffffff"
 m=$(mark)
 assert "a PINNED build works with the GitHub API down (sticky = offline)" \
     ctle "$HSRC" STUB_GH_DOWN=1 -- build
 refute "the pinned build made no GitHub API call" \
     bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q api.github.com"
-assert "source show prints the pinned release" \
+assert "source show prints the pinned CARLOS release" \
     bash -c "cd '$ROOT' && EMR_HOME='$HSRC' python3 -m carlos_ctl.cli source | grep -q 2026.08.0"
+assert "source show prints the pinned DrugRef release" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HSRC' python3 -m carlos_ctl.cli source | grep -q v1.0.0rc2"
 rm -f "$HSRC/build/.source-pin"
 refute "an UNPINNED auto build refuses when the API is down" \
     ctle "$HSRC" STUB_GH_DOWN=1 -- build
@@ -457,8 +476,23 @@ assert "a no-release repo falls back to the branch HEAD sha" \
     bash -c "cd '$ROOT' && STUB_GH_RELEASES=none EMR_HOME='$HSRC' \
         python3 -m carlos_ctl.cli source update >/dev/null 2>&1 \
         && grep -q '\"kind\": \"branch\"' '$HSRC/build/.source-pin'"
-assert "source clear removes the pin" ctl "$HSRC" source clear
-assert "the pin file is gone" bash -c "! test -e '$HSRC/build/.source-pin'"
+# DrugRef manual/sticky flows: set --drugref targets the DrugRef pin only,
+# and its no-release fallback honors DRUGREF_SOURCE_BRANCH (master).
+assert "source set --drugref <sha> pins DrugRef offline" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- source set --drugref 4444444444444444444444444444444444444444
+m=$(mark)
+assert "the manual DrugRef pin drives the next build" ctl "$HSRC" build
+assert "the DrugRef sha pin becomes DRUGREF_REF" \
+    log_since "$m" "DRUGREF_REF=4444444444444444444444444444444444444444"
+refute "a bare-commit DrugRef pin compiles from source (no WAR stage)" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q DRUGREF_WAR_STAGE=download"
+assert "a no-release DrugRef repo falls back to its master branch HEAD" \
+    bash -c "cd '$ROOT' && STUB_GH_DR_RELEASES=none EMR_HOME='$HSRC' \
+        python3 -m carlos_ctl.cli source update >/dev/null 2>&1 \
+        && grep -q '\"branch\": \"master\"' '$HSRC/build/.source-pin.drugref'"
+assert "source clear removes the pins" ctl "$HSRC" source clear
+assert "both pin files are gone" \
+    bash -c "! test -e '$HSRC/build/.source-pin' && ! test -e '$HSRC/build/.source-pin.drugref'"
 refute "source rejects unknown sub-verbs" ctl "$HSRC" source frobnicate
 
 # Rollback schema-compatibility guard: rolling the CODE back never reverses

@@ -273,13 +273,13 @@ class TestSourcePinIntegration:
     CARLOS_REF=auto (offline once pinned), WAR-artifact stage selection, and
     the artifact-aware release gate."""
 
-    def _pin(self, r, **kw) -> None:
-        from carlos_ctl.source import SourcePin, write_pin
+    def _pin(self, r, app=None, **kw) -> None:
+        from carlos_ctl.source import CARLOS, SourcePin, write_pin
 
         defaults = dict(ref=_SHA, kind="release", tag="2026.08.0", commit=_SHA,
                         artifact="source")
         defaults.update(kw)
-        write_pin(r, SourcePin(**defaults), implicit=False)
+        write_pin(r, app or CARLOS, SourcePin(**defaults), implicit=False)
 
     def test_auto_build_uses_the_pinned_sha_offline(self, mk_runner) -> None:
         r = mk_runner(f"DRUGREF_REF={'b' * 40}\n")  # CARLOS_REF defaults to auto
@@ -361,6 +361,67 @@ class TestSourcePinIntegration:
         self._pin(r)  # artifact=source, sha-pinned ref
         with pytest.raises(CtlError, match="CARLOS_SRC_SHA256 is unset"):
             cmd_build(r, [])
+
+    def test_drugref_war_pin_selects_its_download_stage(self, mk_runner) -> None:
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner(f"CARLOS_REF={_SHA}\n")  # DRUGREF_REF defaults to auto
+        _seed_build_ctx(r)
+        self._pin(r, app=DRUGREF, tag="v1.0.0rc2",
+                  artifact="war", war_url="https://x/drugref2.war",
+                  war_sha256="f" * 64)
+        assert cmd_build(r, []) == 0
+        dr_build = next(c for c in r.calls
+                        if "build" in c and "Containerfile.drugref" in " ".join(c))
+        assert "DRUGREF_WAR_URL=https://x/drugref2.war" in dr_build
+        assert f"DRUGREF_WAR_SHA256={'f' * 64}" in dr_build
+        assert "DRUGREF_WAR_STAGE=download" in dr_build
+        # The CARLOS build must not inherit DrugRef's WAR args (or vice versa).
+        carlos_build = next(c for c in r.calls if "build" in c and "-f" in c
+                            and str(c[c.index("-f") + 1]).endswith("/Containerfile"))
+        assert not any("DRUGREF_WAR" in a for a in carlos_build)
+        assert not any("CARLOS_WAR" in a for a in dr_build)
+
+    def test_all_war_release_build_needs_no_source_date_epoch(self, mk_runner) -> None:
+        # SOURCE_DATE_EPOCH pins COMPILE timestamps; an all-WAR release build
+        # runs no compiler, so requiring it would demand a meaningless knob.
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner("", {"CARLOS_BUILD_MODE": "release"})
+        _seed_build_ctx(r)
+        self._pin(r, artifact="war", war_url="https://x/x.war", war_sha256="d" * 64)
+        self._pin(r, app=DRUGREF, tag="v1.0.0rc2", artifact="war",
+                  war_url="https://x/drugref2.war", war_sha256="f" * 64)
+        assert cmd_build(r, []) == 0
+        assert (r.settings.emr_home / "build" / ".build-mode").read_text().strip() == "release"
+
+    def test_release_mode_refuses_drugref_war_pin_without_sha(self, mk_runner) -> None:
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner(
+            f"CARLOS_REF={_SHA}\nCARLOS_SRC_SHA256=deadbeef\n"
+            "SOURCE_DATE_EPOCH=1751500000\n",
+            {"CARLOS_BUILD_MODE": "release"},
+        )
+        _seed_build_ctx(r)
+        self._pin(r, app=DRUGREF, tag="v1.0.0rc2", artifact="war",
+                  war_url="https://x/drugref2.war", war_sha256="")
+        with pytest.raises(CtlError, match="DRUGREF WAR artifact has no sha256"):
+            cmd_build(r, [])
+
+    def test_containerfile_drugref_carries_the_war_stage_plumbing(self) -> None:
+        from pathlib import Path
+
+        text = Path(__file__).resolve().parents[2].joinpath(
+            "Containerfile.drugref").read_text()
+        assert "ARG DRUGREF_WAR_URL" in text
+        assert "ARG DRUGREF_WAR_SHA256" in text
+        assert "ARG DRUGREF_WAR_STAGE=build" in text
+        assert "AS download" in text
+        assert "FROM ${DRUGREF_WAR_STAGE} AS warsrc" in text
+        assert "from=warsrc" in text and "from=build" not in text
+        assert 'test -n "$DRUGREF_WAR_SHA256"' in text
+        assert "sha256sum -c" in text
 
     def test_containerfile_carries_the_war_stage_plumbing(self) -> None:
         from pathlib import Path
