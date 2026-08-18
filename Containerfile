@@ -9,7 +9,9 @@
 #   (--no-cache matters: see REPRODUCIBILITY below — a cached ADD ships stale code)
 #   podman build --build-arg CARLOS_REF=<branch-or-tag-or-SHA> ...
 #
-# REPRODUCIBILITY: the default `develop` is a moving branch — two clean builds
+# REPRODUCIBILITY: the default `main` (the stable branch releases are cut
+# from; pass CARLOS_REF=develop deliberately for the development branch) is
+# still a moving branch — two clean builds
 # weeks apart produce different images. For releases, pin a COMMIT SHA
 # (--build-arg CARLOS_REF=<40-char-sha>; GitHub serves archive/<sha>.tar.gz and
 # --strip-components=1 already handles the carlos-<sha>/ top dir). Because
@@ -20,7 +22,7 @@
 # tag can never change what a PHI image is built from — to bump, pick the new
 # tag and re-resolve its multi-arch digest (skopeo inspect --format
 # '{{.Digest}}' docker://<repo>:<tag>). Digests resolved 2026-07.
-ARG CARLOS_REF=develop
+ARG CARLOS_REF=main
 # WAR-artifact mode: when a GitHub release publishes a prebuilt WAR
 # (carlos-<tag>.war), `carlos-ctl build` selects the `download` stage below
 # instead of the Maven compile by passing CARLOS_WAR_STAGE=download plus the

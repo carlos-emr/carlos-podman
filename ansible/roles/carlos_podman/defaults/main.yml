@@ -299,9 +299,11 @@ carlos_ref: auto
 # compiles that release's source; `war`/`source` force one side. The choice
 # made under `auto` is persisted in the source pin.
 carlos_artifact: auto
-# The no-releases fallback branch for `auto` resolution (the app repo's
-# default branch — carlos-emr/carlos has no `main`).
-carlos_source_branch: develop
+# The no-releases fallback branch for `auto` resolution: `main` is the app
+# repo's stable/release branch (develop is promoted into it; releases are
+# cut from it). Tracking the development branch instead is a manual-ref
+# choice: `carlos_ref: develop`.
+carlos_source_branch: main
 # DrugRef: same three knobs, same semantics (drugref2026's default branch is
 # `master`).
 carlos_drugref_ref: auto

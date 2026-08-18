@@ -175,9 +175,11 @@ _DEFAULTS: Dict[str, str] = {
     # source compile; `war`/`source` force one side. The auto choice is
     # persisted in the source pin like the version is.
     "CARLOS_ARTIFACT": "auto",
-    # The no-releases fallback branch for auto resolution. The app repo's
-    # default branch is `develop` (it has no `main`).
-    "CARLOS_SOURCE_BRANCH": "develop",
+    # The no-releases fallback branch for auto resolution: `main` is the
+    # app repo's stable/release branch (develop is promoted into it and
+    # releases are cut from it); operators tracking the development branch
+    # instead set a manual CARLOS_REF=develop.
+    "CARLOS_SOURCE_BRANCH": "main",
     "DRUGREF_REF": "auto",
     "DRUGREF_ARTIFACT": "auto",
     # drugref2026's default branch is `master`.

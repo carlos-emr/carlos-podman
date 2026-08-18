@@ -9,9 +9,10 @@ and its own pin:
 
 - <APP>_REF=auto (the default) resolves per policy — the newest
   NON-prerelease GitHub release of the app's repo by publish time, else the
-  newest prerelease, else the HEAD of <APP>_SOURCE_BRANCH (the repo's
-  default branch: carlos-emr/carlos has `develop`, carlos-emr/drugref2026
-  has `master`; neither has `main`) — and then PINS the answer in
+  newest prerelease, else the HEAD of <APP>_SOURCE_BRANCH (`main` for
+  carlos-emr/carlos, its stable/release branch; `master` for
+  carlos-emr/drugref2026, its default and only long-lived branch) — and
+  then PINS the answer in
   $EMR_HOME/build/ (.source-pin for CARLOS, .source-pin.drugref for
   DrugRef). Every later build reads the pin with ZERO network calls: the
   deployed version never drifts because upstream published something, only

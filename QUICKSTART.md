@@ -162,11 +162,13 @@ The WAR is verified against its sha256 inside the build; a mismatch fails the
 build.
 
 **Path B — compile from source.** Use this when no release exists (build the
-`develop` branch HEAD, as shown) or when you want to compile a release's own
-source (set `CARLOS_SHA` to the release's source commit instead):
+`main` branch HEAD — the stable branch releases are cut from — as shown) or
+when you want to compile a release's own source (set `CARLOS_SHA` to the
+release's source commit instead). Substitute `develop` for `main` if you
+deliberately want the development branch:
 
 ```bash
-CARLOS_SHA=$(git ls-remote https://github.com/carlos-emr/carlos.git develop | cut -f1)
+CARLOS_SHA=$(git ls-remote https://github.com/carlos-emr/carlos.git main | cut -f1)
 test -n "$CARLOS_SHA"
 printf 'Building CARLOS commit %s\n' "$CARLOS_SHA"
 

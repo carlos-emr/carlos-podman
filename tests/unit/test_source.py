@@ -124,12 +124,12 @@ class TestResolutionPolicy:
         assert pin.war_sha256 == _WAR_SHA
 
     def test_no_releases_falls_back_to_branch_head_sha(self, mk_runner) -> None:
-        # Requirement 3: no releases at all -> the app repo's default branch
-        # HEAD, pinned as a SHA (never the moving branch name).
+        # Requirement 3: no releases at all -> main HEAD (the app repo's
+        # stable/release branch), pinned as a SHA (never the moving name).
         r = mk_runner()
         _gh(r, [])
         pin = resolve_policy(r, CARLOS)
-        assert (pin.kind, pin.branch) == ("branch", "develop")
+        assert (pin.kind, pin.branch) == ("branch", "main")
         assert pin.ref == _SHA
         assert pin.artifact == "source"
 

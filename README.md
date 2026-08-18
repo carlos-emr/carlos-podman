@@ -232,7 +232,8 @@ sudo ansible-playbook -i inventory ansible/site.yml
 # 5. Build the CARLOS and DrugRef images. The role installed the build
 #    context to $EMR_HOME/build/. The FIRST build resolves EACH app's newest
 #    GitHub release (newest non-prerelease by publish time > newest
-#    prerelease > its default-branch HEAD), prefers the release's published
+#    prerelease > its fallback-branch HEAD: main for CARLOS, master for
+#    DrugRef), prefers the release's published
 #    WAR (sha256-verified — skips the long Maven compile), and PINS the
 #    choices in $EMR_HOME/build/ (.source-pin, .source-pin.drugref): later
 #    builds stay on those pins, offline, until `carlos-ctl source update`
@@ -1876,8 +1877,9 @@ app. The contract is identical for both; DrugRef simply uses its own keys
 - **`carlos_ref: auto` / `carlos_drugref_ref: auto`** (the defaults). The
   first `carlos-ctl build` resolves each app's newest **GitHub release** —
   newest non-prerelease by publish time, else the newest prerelease, else
-  the HEAD of the app's `*_source_branch` (`develop` for `carlos-emr/carlos`,
-  `master` for `carlos-emr/drugref2026` — each repo's default branch) — and
+  the HEAD of the app's `*_source_branch` (`main` for `carlos-emr/carlos` —
+  its stable/release branch, which `develop` is promoted into — and `master`
+  for `carlos-emr/drugref2026`) — and
   **pins** the answers in `$EMR_HOME/build/.source-pin` (CARLOS) and
   `$EMR_HOME/build/.source-pin.drugref` (DrugRef). A pin records the release
   tag AND its commit SHA (tags are mutable; nothing downstream trusts one),
@@ -1895,7 +1897,7 @@ app. The contract is identical for both; DrugRef simply uses its own keys
   `war` / `source` force one side per app; the choice made under `auto` is
   persisted in that app's pin. (In WAR mode the CARLOS login page shows the
   release's own buildVersion, not a local build stamp.)
-- **`carlos_source_branch: develop` / `carlos_drugref_source_branch:
+- **`carlos_source_branch: main` / `carlos_drugref_source_branch:
   master`** — only used by each app's no-releases fallback.
 
 Day to day (`--drugref` targets the DrugRef pin; without it, CARLOS):
@@ -2949,8 +2951,8 @@ pinned WAR sha256 (verified in-image) instead of its `*_SRC_SHA256`, and the
 compile-only layers apply only to images that actually compile (the
 dependency-lock profile exists in the CARLOS pom only; DrugRef has none).
 `SOURCE_DATE_EPOCH` is required whenever anything compiles — an all-WAR
-release build runs no compiler and needs no timestamp pin. Without it (the default), builds
-stay on `develop`/`master` and only warn. Redeploy a specific pair with
+release build runs no compiler and needs no timestamp pin. Without it (the default), a
+manually configured moving-branch ref only warns. Redeploy a specific pair with
 `carlos-ctl rebuild --ref <sha> --drugref-ref <sha>`. (`build` reads its
 context from `$EMR_HOME/build/` — installed by the role — or a repo checkout
 via `CARLOS_BUILD_DIR`.)

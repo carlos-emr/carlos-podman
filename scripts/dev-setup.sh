@@ -257,8 +257,9 @@ Setup complete. Next (QUICKSTART.md steps 1, 3-5):
          --build-arg CARLOS_WAR_STAGE=download \\
          --build-arg CARLOS_WAR_URL=\$WAR_URL --build-arg CARLOS_WAR_SHA256=\$WAR_SHA \\
          -t localhost/carlos-app:latest -f Containerfile .
-     No release / compiling from source instead:
-       CARLOS_SHA=\$(git ls-remote https://github.com/carlos-emr/carlos develop | cut -f1)
+     No release / compiling from source instead (main = the stable branch;
+     use develop deliberately for the development branch):
+       CARLOS_SHA=\$(git ls-remote https://github.com/carlos-emr/carlos main | cut -f1)
        podman build --no-cache --ulimit nofile=65536:65536 \\
          --build-arg CARLOS_REF=\$CARLOS_SHA \\
          -t localhost/carlos-app:latest -f Containerfile .
