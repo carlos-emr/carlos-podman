@@ -21,7 +21,7 @@ container workflow before configuring a standard environment.
 
 - **Sample-data evaluation:** continue with steps 1–6. This path uses the
   upstream seeded account and a loopback-only endpoint.
-- **Standard ON or BC environment:** review the host concepts in steps 1–2,
+- **Standard ON or BC environment:** review the host concepts in step 1,
   then continue at [Standard Ontario or British Columbia deployment](#standard-ontario-or-british-columbia-deployment).
 
 The sample-data instructions assume that you:
@@ -118,12 +118,12 @@ session before continuing.
 the packaged device rule normally configures this automatically. Fix the host
 udev or device permissions if the check prints nothing.
 
-## 2. Get the source and build the image
+## 2. Build the application image
 
 Clone this repository if you have not already done so:
 
 ```bash
-git clone https://github.com/yingbull/carlos-podman.git
+git clone https://github.com/carlos-emr/carlos-podman.git
 cd carlos-podman
 ```
 
@@ -162,7 +162,8 @@ The WAR is verified against its sha256 inside the build; a mismatch fails the
 build.
 
 **Path B — compile from source.** Use this when no release exists (build the
-`main` branch HEAD — the stable branch releases are cut from — as shown) or
+`main` branch HEAD — the stable branch `develop` is promoted into for
+release — as shown) or
 when you want to compile a release's own source (set `CARLOS_SHA` to the
 release's source commit instead). Substitute `develop` for `main` if you
 deliberately want the development branch:
@@ -428,7 +429,7 @@ ansible-galaxy collection install ansible.utils
 Clone the repository and create a working inventory:
 
 ```bash
-git clone https://github.com/yingbull/carlos-podman.git
+git clone https://github.com/carlos-emr/carlos-podman.git
 cd carlos-podman
 cp ansible/inventory.example ansible/inventory
 ```

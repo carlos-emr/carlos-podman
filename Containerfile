@@ -9,9 +9,9 @@
 #   (--no-cache matters: see REPRODUCIBILITY below — a cached ADD ships stale code)
 #   podman build --build-arg CARLOS_REF=<branch-or-tag-or-SHA> ...
 #
-# REPRODUCIBILITY: the default `main` (the stable branch releases are cut
-# from; pass CARLOS_REF=develop deliberately for the development branch) is
-# still a moving branch — two clean builds
+# REPRODUCIBILITY: the default `main` (the stable branch `develop` is
+# promoted into for release; pass CARLOS_REF=develop deliberately for the
+# development branch) is still a moving branch — two clean builds
 # weeks apart produce different images. For releases, pin a COMMIT SHA
 # (--build-arg CARLOS_REF=<40-char-sha>; GitHub serves archive/<sha>.tar.gz and
 # --strip-components=1 already handles the carlos-<sha>/ top dir). Because

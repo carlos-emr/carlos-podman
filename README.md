@@ -16,8 +16,10 @@
 provision obligations under the AGPL; obtain legal advice for your distribution
 and deployment model when needed.
 
-Deployment tooling for the [CARLOS EMR](https://github.com/carlos-emr/carlos)
-(`develop` branch), the fork that succeeds the previous OpenO deployment.
+Deployment tooling for the [CARLOS EMR](https://github.com/carlos-emr/carlos),
+the fork that succeeds the previous OpenO deployment — release-first by
+default (the newest CARLOS/DrugRef GitHub releases, pinned; see
+[Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)).
 **Three pods**: a PHI runtime pod (`carlos-app`), an *optional* observability/admin
 pod (`carlos-obs`, split out so app deploys never bounce the log/metric stores;
 see [The observability pod is optional](#the-observability-pod-is-optional)),
@@ -121,7 +123,7 @@ Files:
   `waf/nginx-headers.conf`
 - `scripts/dev-setup.sh` — helper for the QUICKSTART dev walk-through:
   automates the instance directory layout, verbatim conf copies, and the
-  `carlos.properties`/pod-spec renders (steps 2-3), password off-argv
+  `carlos.properties`/pod-spec renders (QUICKSTART step 3), password off-argv
 - `tests/run-tests.sh` — the hermetic e2e suite for the CLI: no
   root/podman/systemd/TPM/sops needed — `tests/stubs/` provides recording
   fakes for podman, systemctl, systemd-creds, sops, age, nft, ss, curl, …,
@@ -130,7 +132,8 @@ Files:
   fabricates an Ansible-rendered instance home (the playbook's output
   contract) and drives the CLI against it
 - `tests/unit/` — pytest unit tests for the pure-logic modules (config
-  parsing, validation, PITR anchor parsing, secrets round-trips, monitor)
+  parsing, validation, the release-resolution policy and source pins, PITR
+  anchor parsing, secrets round-trips, monitor)
 - `tests/ansible-checks.sh` — role checks: syntax, ansible-lint, a full
   template render into a temp prefix (both obs profiles, token-free output),
   second-run idempotency, and the obs-toggle round trip
@@ -1905,8 +1908,8 @@ Day to day (`--drugref` targets the DrugRef pin; without it, CARLOS):
 ```bash
 carlos-ctl source            # both pins, and what the next build does
 carlos-ctl source update     # re-resolve BOTH apps to their newest releases
-carlos-ctl source set 2026.08.0                     # pin a CARLOS release (WAR-first)
-carlos-ctl source set 2026.08.0 --artifact source   # …but compile it
+carlos-ctl source set 2026.08.0-alpha1                   # pin a CARLOS release (WAR-first)
+carlos-ctl source set 2026.08.0-alpha1 --artifact source # …but compile it
 carlos-ctl source set <40-hex-sha>                  # pin a CARLOS commit, offline
 carlos-ctl source set --drugref v1.0.0rc2           # pin a DrugRef release
 carlos-ctl source set --drugref master              # pin DrugRef master's CURRENT head
@@ -2951,7 +2954,8 @@ pinned WAR sha256 (verified in-image) instead of its `*_SRC_SHA256`, and the
 compile-only layers apply only to images that actually compile (the
 dependency-lock profile exists in the CARLOS pom only; DrugRef has none).
 `SOURCE_DATE_EPOCH` is required whenever anything compiles — an all-WAR
-release build runs no compiler and needs no timestamp pin. Without it (the default), a
+release build runs no compiler and needs no timestamp pin. Without
+`CARLOS_BUILD_MODE=release` (the default), a
 manually configured moving-branch ref only warns. Redeploy a specific pair with
 `carlos-ctl rebuild --ref <sha> --drugref-ref <sha>`. (`build` reads its
 context from `$EMR_HOME/build/` — installed by the role — or a repo checkout
