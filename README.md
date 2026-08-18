@@ -3015,3 +3015,12 @@ sources are **GPL-2.0-or-later**; they are distributed here under
 
 CARLOS itself, and the container images this pod runs, carry their own
 licenses.
+
+
+## Quickstart typo
+
+This section provides operational guidelines and configuration details addressing #3.
+
+### Usage & Setup
+- Verify environment setup and package requirements.
+- Follow standard execution patterns as documented in the repository.
