@@ -300,9 +300,9 @@ carlos_ref: auto
 # made under `auto` is persisted in the source pin.
 carlos_artifact: auto
 # The no-releases fallback branch for `auto` resolution: `main` is the app
-# repo's stable/release branch (develop is promoted into it; releases are
-# cut from it). Tracking the development branch instead is a manual-ref
-# choice: `carlos_ref: develop`.
+# repo's stable branch (`develop` is promoted into it for release).
+# Tracking the development branch instead is a manual-ref choice:
+# `carlos_ref: develop`.
 carlos_source_branch: main
 # DrugRef: same three knobs, same semantics (drugref2026's default branch is
 # `master`).

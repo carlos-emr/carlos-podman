@@ -585,3 +585,140 @@ class TestDrugRefSelection:
         assert cmd_source(r, ["clear"]) == 0
         assert read_pin(r, CARLOS) is None
         assert read_pin(r, DRUGREF) is None
+
+
+class TestArtifactFlagReconciliation:
+    """`source set --artifact` must win over <APP>_ARTIFACT on EVERY spec
+    path, and a war demand that a bare commit cannot satisfy must refuse at
+    set time — not write a pin that bricks every later build."""
+
+    def test_set_branch_artifact_source_beats_a_war_setting(self, mk_runner) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=war\n")
+        _gh(r, [_rel("2026.08.0", assets=_war_assets("2026.08.0"))])
+        assert cmd_source(r, ["set", "develop", "--artifact", "source"]) == 0
+        pin = read_pin(r, CARLOS)
+        assert (pin.kind, pin.branch, pin.artifact) == ("branch", "develop", "source")
+
+    def test_set_sha_refuses_when_the_setting_demands_war(self, mk_runner) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=war\n")
+        with pytest.raises(CtlError, match="--artifact source"):
+            cmd_source(r, ["set", "f" * 40])
+        assert read_pin(r, CARLOS) is None  # nothing half-written
+
+    def test_set_sha_artifact_source_overrides_the_war_setting_and_warns(
+        self, mk_runner, capsys
+    ) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=war\n")
+        assert cmd_source(r, ["set", "f" * 40, "--artifact", "source"]) == 0
+        assert read_pin(r, CARLOS).artifact == "source"
+        # The persistent setting will still force war at build time and this
+        # pin has no WAR — the operator must hear that NOW.
+        assert "REFUSE" in capsys.readouterr().err
+
+    def test_set_tag_artifact_source_keeps_the_war_data(self, mk_runner, capsys) -> None:
+        # The one-run-override contract: flipping back to the WAR later must
+        # not need the network, so a forced-source release pin keeps url+sha.
+        r = mk_runner()
+        _gh(r, [_rel("2026.08.0", assets=_war_assets("2026.08.0"))])
+        assert cmd_source(r, ["set", "2026.08.0", "--artifact", "source"]) == 0
+        pin = read_pin(r, CARLOS)
+        assert pin.artifact == "source"
+        assert pin.war_url.endswith("carlos-2026.08.0.war")
+        assert pin.war_sha256 == _WAR_SHA
+
+
+class TestArtifactEnumValidation:
+    """<APP>_ARTIFACT is a closed enum — a typo must fail loudly, not silently
+    select an artifact the operator did not choose."""
+
+    @pytest.mark.parametrize("bad", ["Source", "WAR", "True", "1", "tarball"])
+    def test_unrecognized_artifact_value_is_refused(self, mk_runner, bad) -> None:
+        r = mk_runner(f"CARLOS_ARTIFACT={bad}\nCARLOS_REF=develop\n")
+        with pytest.raises(CtlError, match="not a recognized artifact"):
+            resolve_for_build(r, CARLOS)
+
+    def test_the_three_valid_values_pass(self, mk_runner) -> None:
+        for good in ("auto", "source"):
+            r = mk_runner(f"CARLOS_ARTIFACT={good}\nCARLOS_REF=develop\n")
+            assert resolve_for_build(r, CARLOS).artifact == "source"
+        r = mk_runner(
+            "CARLOS_ARTIFACT=war\nCARLOS_REF=develop\n"
+            f"CARLOS_WAR_URL=https://x/x.war\nCARLOS_WAR_SHA256={_WAR_SHA}\n"
+        )
+        assert resolve_for_build(r, CARLOS).artifact == "war"
+
+
+class TestPinPlausibilityValidation:
+    """read_pin rejects pins write_pin cannot produce (corruption/hand edits)
+    so a bad value degrades to a clean re-resolve, never a --build-arg like
+    CARLOS_REF=None dying deep inside podman."""
+
+    def _write_raw(self, r, **fields) -> None:
+        import json as _json
+
+        base = dict(v=1, ref=_SHA, kind="manual", tag="", branch="", commit=_SHA,
+                    artifact="source", war_url="", war_sha256="",
+                    resolved_at="", policy="manual")
+        base.update(fields)
+        path = source_mod.pin_path(r, CARLOS)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(base))
+
+    @pytest.mark.parametrize("fields", [
+        {"ref": None},                       # str(None) -> "None": not a sha
+        {"ref": "develop"},                  # persisted pins are commit-pinned
+        {"kind": "releaseX"},
+        {"artifact": "war", "war_url": "", "war_sha256": ""},
+        {"artifact": "war", "war_url": "https://x/x.war", "war_sha256": "short"},
+    ])
+    def test_implausible_pins_degrade_to_none(self, mk_runner, capsys, fields) -> None:
+        r = mk_runner()
+        self._write_raw(r, **fields)
+        assert read_pin(r, CARLOS) is None
+        assert "implausible" in capsys.readouterr().err
+
+    def test_a_plausible_war_pin_still_reads(self, mk_runner) -> None:
+        r = mk_runner()
+        self._write_raw(r, artifact="war", war_url="https://x/x.war",
+                        war_sha256=_WAR_SHA)
+        assert read_pin(r, CARLOS).artifact == "war"
+
+
+class TestShowReportsArtifactOverride:
+    def test_forced_source_over_a_war_pin_is_reported(self, mk_runner, capsys) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=source\n")
+        write_pin(r, CARLOS, SourcePin(ref=_SHA, kind="release", tag="2026.08.0",
+                                       commit=_SHA, artifact="war",
+                                       war_url="https://x/x.war",
+                                       war_sha256=_WAR_SHA), implicit=False)
+        assert cmd_source(r, ["show"]) == 0
+        assert "overrides the pinned artifact" in capsys.readouterr().out
+
+    def test_forced_war_over_a_warless_pin_warns_refusal(self, mk_runner, capsys) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=war\n")
+        write_pin(r, CARLOS, SourcePin(ref=_SHA, kind="branch", branch="main",
+                                       commit=_SHA, artifact="source"),
+                  implicit=False)
+        assert cmd_source(r, ["show"]) == 0
+        assert "REFUSE" in capsys.readouterr().err
+
+
+class TestUpdateAtomicityAndAllManual:
+    def test_all_manual_update_says_nothing_to_update(self, mk_runner, capsys) -> None:
+        r = mk_runner("CARLOS_REF=develop\nDRUGREF_REF=master\n")
+        assert cmd_source(r, ["update"]) == 0
+        cap = capsys.readouterr()
+        assert "nothing to update" in cap.out
+        assert "rebuild" not in cap.out  # no pointless redeploy suggestion
+
+    def test_update_writes_nothing_when_the_second_app_fails(self, mk_runner) -> None:
+        # CARLOS resolves fine; DrugRef's API is not scripted (offline) — the
+        # CARLOS pin must NOT have moved (resolve-all-then-write-all).
+        r = mk_runner()
+        old = SourcePin(ref="e" * 40, kind="release", tag="2026.07.0",
+                        commit="e" * 40, artifact="source")
+        write_pin(r, CARLOS, old, implicit=False)
+        _gh(r, [_rel("2026.08.0", assets=_war_assets("2026.08.0"))])
+        with pytest.raises(CtlError):
+            cmd_source(r, ["update"])
+        assert read_pin(r, CARLOS) == old

@@ -178,6 +178,19 @@
       ON, BC, or generic (the provinces CARLOS implements billing for);
       billregion in carlos.properties renders from this value.
 
+- name: Artifact selection is a value carlos-ctl recognizes
+  # <APP>_ARTIFACT is a closed enum; the CLI hard-fails on anything else
+  # (source.py:_artifact_cfg) — catch the typo at provisioning time, before
+  # it fails the first build on the target.
+  ansible.builtin.assert:
+    that:
+      - carlos_artifact in ['auto', 'war', 'source']
+      - carlos_drugref_artifact in ['auto', 'war', 'source']
+    fail_msg: >-
+      carlos_artifact='{{ carlos_artifact }}' /
+      carlos_drugref_artifact='{{ carlos_drugref_artifact }}' — each must be one
+      of auto (prefer the release's published WAR), war, or source.
+
 - name: acme mode requires a real SERVER_NAME (HTTP-01 must resolve to this host)
   # The shipped default carlos_server_name is the documentation placeholder
   # emr.example.ca — in acme mode certbot would request a Let's Encrypt cert

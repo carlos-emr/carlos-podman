@@ -490,6 +490,18 @@ assert "a no-release DrugRef repo falls back to its master branch HEAD" \
     bash -c "cd '$ROOT' && STUB_GH_DR_RELEASES=none EMR_HOME='$HSRC' \
         python3 -m carlos_ctl.cli source update >/dev/null 2>&1 \
         && grep -q '\"branch\": \"master\"' '$HSRC/build/.source-pin.drugref'"
+# Prerelease-only repo — TODAY's live carlos-emr/carlos state (one prerelease,
+# 2026.08.0-alpha1, shipping a WAR): the fresh-install path must resolve it,
+# pin it, and build from its WAR end to end.
+HPRE="$WORK/h-source-pre"; mk_home "$HPRE"
+touch "$HPRE/build/Containerfile" "$HPRE/build/Containerfile.drugref"
+m=$(mark)
+assert "a prerelease-only repo resolves the prerelease on first build" \
+    ctle "$HPRE" STUB_GH_RELEASES=prerelease-only -- build
+assert "the prerelease tag is pinned" grep -q 2026.08.0-alpha1 "$HPRE/build/.source-pin"
+assert "the prerelease's WAR selects the download stage" \
+    log_since "$m" "CARLOS_WAR_STAGE=download"
+
 assert "source clear removes the pins" ctl "$HSRC" source clear
 assert "both pin files are gone" \
     bash -c "! test -e '$HSRC/build/.source-pin' && ! test -e '$HSRC/build/.source-pin.drugref'"

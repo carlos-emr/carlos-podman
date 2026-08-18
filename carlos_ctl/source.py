@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .runner import Runner
-from .util import CtlError, log, warn
+from .util import CtlError, atomic_write, log, warn
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
@@ -166,10 +166,23 @@ def read_pin(runner: Runner, app: AppSource) -> Optional[SourcePin]:
             f"auto build re-resolves (or 'carlos-ctl source set' pins manually)"
         )
         return None
-    if not pin.ref or pin.artifact not in ("war", "source"):
+    # Structural validation. Every pin write_pin produces has a 40-hex ref
+    # (policy pins resolve commits; `set` accepts only sha/tag/branch, all
+    # commit-resolved), a known kind, and — for a WAR pin — a usable
+    # url+sha256 pair. Anything else is corruption or a hand edit; degrading
+    # to None here beats a `--build-arg CARLOS_REF=None` dying deep inside
+    # podman with an error that reads like a Containerfile bug.
+    if (
+        not _SHA40.match(pin.ref)
+        or pin.kind not in ("release", "prerelease", "branch", "manual")
+        or pin.artifact not in ("war", "source")
+        or (pin.artifact == "war"
+            and not (pin.war_url and _SHA256_HEX.match(pin.war_sha256)))
+    ):
         warn(
-            f"{path} carries an incomplete source pin — ignoring it; the next auto "
-            f"build re-resolves"
+            f"{path} carries an incomplete or implausible source pin — ignoring it; "
+            f"the next auto build re-resolves (or 'carlos-ctl source set' pins "
+            f"manually)"
         )
         return None
     return pin
@@ -183,8 +196,11 @@ def write_pin(runner: Runner, app: AppSource, pin: SourcePin, *, implicit: bool)
     path = pin_path(runner, app)
     payload = json.dumps({"v": 1, **dataclasses.asdict(pin)}, indent=2) + "\n"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(payload)
+        # atomic_write (temp + rename): a torn write_text would leave a
+        # truncated pin that read_pin degrades to None — and the next auto
+        # build would silently re-resolve to a NEWER release, the exact drift
+        # the pin exists to prevent. 0644: nothing in a pin is secret.
+        atomic_write(path, payload, mode=0o644)
     except OSError as e:
         if not implicit:
             raise CtlError(f"could not write the source pin {path} ({e})") from None
@@ -286,6 +302,21 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _artifact_cfg(runner: Runner, app: AppSource) -> str:
+    """<APP>_ARTIFACT, validated. This is a CLOSED enum: a typo'd value
+    (`Source`, a YAML `True`) must fail loudly, not silently select an
+    artifact the operator did not choose — the two historical readers even
+    disagreed on the fallback (release resolution read non-`source` as
+    prefer-WAR, manual mode read non-`war` as source)."""
+    value = runner.settings.get(f"{app.prefix}_ARTIFACT")
+    if value not in ("auto", "war", "source"):
+        raise CtlError(
+            f"{app.prefix}_ARTIFACT='{value}' is not a recognized artifact — use "
+            f"auto (prefer the release's published WAR), war, or source"
+        )
+    return value
+
+
 def _offline_error(app: AppSource) -> CtlError:
     return CtlError(
         f"cannot resolve the {app.label} version: the GitHub API "
@@ -302,9 +333,16 @@ def _pin_release(runner: Runner, app: AppSource, release: dict, *, policy: str) 
     """Build a pin for one chosen release: resolve the tag to its commit
     (tags are mutable; the SHA is what source builds fetch) and detect the
     published WAR per the artifact policy."""
-    s = runner.settings
     tag = str(release.get("tag_name") or "")
     kind = "prerelease" if release.get("prerelease") else "release"
+    if not tag:
+        # A release with no tag has no immutable identity to pin (and its
+        # asset names cannot be derived) — fail readably rather than issuing
+        # GET /commits/ (the list endpoint) and dying on its answer shape.
+        raise CtlError(
+            f"a {app.repo} {kind} carries no tag_name — refusing to pin it; retry, "
+            f"or pin explicitly with 'carlos-ctl source set'"
+        )
     commit = resolve_commit(runner, app, tag)
     if not commit:
         # The releases list answered but /commits did not (partial outage or
@@ -316,26 +354,30 @@ def _pin_release(runner: Runner, app: AppSource, release: dict, *, policy: str) 
             f"via the GitHub API — retry, or pin explicitly with 'carlos-ctl source set'"
         )
     war_url, war_sha = detect_war_asset(runner, app, release, tag)
-    artifact_cfg = s.get(f"{app.prefix}_ARTIFACT")
-    if artifact_cfg == "war" or (artifact_cfg != "source" and war_url and war_sha):
+    artifact_cfg = _artifact_cfg(runner, app)
+    if artifact_cfg == "war" or (artifact_cfg == "auto" and war_url and war_sha):
         if not (war_url and war_sha):
             raise CtlError(
-                f"{app.prefix}_ARTIFACT=war but {app.label} {kind} {tag} publishes no "
-                f"verifiable WAR asset ({' / '.join(n.format(tag=tag) for n in app.war_names)} "
-                f"with a sha256) — use {app.prefix}_ARTIFACT=auto/source, or pick a "
-                f"release that ships one"
+                f"WAR artifact requested (--artifact war / {app.prefix}_ARTIFACT=war) "
+                f"but {app.label} {kind} {tag} publishes no verifiable WAR asset "
+                f"({' / '.join(n.format(tag=tag) for n in app.war_names)} with a "
+                f"sha256) — use auto/source, or pick a release that ships one"
             )
         artifact, url, sha = "war", war_url, war_sha
     else:
-        if artifact_cfg != "source" and war_url and not war_sha:
+        if artifact_cfg == "auto" and war_url and not war_sha:
             warn(
                 f"{app.label} {kind} {tag} publishes a WAR but no sha256 could be "
                 f"determined — an unverifiable download is refused; compiling from "
                 f"source instead"
             )
-        elif artifact_cfg != "source" and not war_url:
+        elif artifact_cfg == "auto" and not war_url:
             log(f"{app.label} {kind} {tag} publishes no WAR asset — compiling from source")
-        artifact, url, sha = "source", "", ""
+        # A forced-source pin KEEPS a verifiable WAR's url+sha: flipping back
+        # later (<APP>_ARTIFACT=war, or a re-`set`) must not need the network
+        # — the documented one-run-override contract depends on it.
+        artifact = "source"
+        url, sha = (war_url, war_sha) if (war_url and war_sha) else ("", "")
     return SourcePin(
         ref=commit, kind=kind, tag=tag, commit=commit, artifact=artifact,
         war_url=url, war_sha256=sha, resolved_at=_now_iso(), policy=policy,
@@ -350,10 +392,11 @@ def _pin_branch(runner: Runner, app: AppSource, branch: str, *, policy: str) -> 
             f"— check the branch name ({app.prefix}_SOURCE_BRANCH) and connectivity, "
             f"or pin a 40-hex commit with 'carlos-ctl source set'"
         )
-    if runner.settings.get(f"{app.prefix}_ARTIFACT") == "war":
+    if _artifact_cfg(runner, app) == "war":
         raise CtlError(
-            f"{app.prefix}_ARTIFACT=war cannot be satisfied from a branch (only "
-            f"releases publish WAR assets) — use {app.prefix}_ARTIFACT=auto/source"
+            f"a WAR artifact (--artifact war / {app.prefix}_ARTIFACT=war) cannot be "
+            f"satisfied from a branch (only releases publish WAR assets) — use "
+            f"auto/source"
         )
     return SourcePin(
         ref=commit, kind="branch", branch=branch, commit=commit, artifact="source",
@@ -393,7 +436,7 @@ def _manual_pin(runner: Runner, app: AppSource) -> SourcePin:
     supplies the URL+sha explicitly (the offline/air-gapped WAR channel)."""
     s = runner.settings
     ref = s.get(f"{app.prefix}_REF")
-    artifact_cfg = s.get(f"{app.prefix}_ARTIFACT")
+    artifact_cfg = _artifact_cfg(runner, app)
     if artifact_cfg == "war":
         url = s.get(f"{app.prefix}_WAR_URL")
         sha = s.get(f"{app.prefix}_WAR_SHA256").lower()
@@ -435,7 +478,7 @@ def resolve_for_build(runner: Runner, app: AppSource) -> SourcePin:
             f"this until 'carlos-ctl source update' (or set/clear)"
         )
         return pin
-    forced = s.get(f"{app.prefix}_ARTIFACT")
+    forced = _artifact_cfg(runner, app)
     if forced == "war" and pin.artifact != "war":
         if not (pin.war_url and pin.war_sha256):
             raise CtlError(
@@ -489,6 +532,25 @@ def _print_app(runner: Runner, app: AppSource) -> None:
             f"next build resolves the newest {app.repo} release (release > "
             f"prerelease > {s.get(f'{app.prefix}_SOURCE_BRANCH')} HEAD) and pins it"
         )
+    else:
+        # `source` is the documented answer to "what will the next build do"
+        # — when <APP>_ARTIFACT forces the OTHER side of the pinned artifact
+        # (resolve_for_build applies exactly that override every build), the
+        # report must say so instead of echoing the pin.
+        forced = _artifact_cfg(runner, app)
+        if forced != "auto" and forced != pin.artifact:
+            if forced == "war" and not (pin.war_url and pin.war_sha256):
+                warn(
+                    f"{app.prefix}_ARTIFACT=war forces the WAR, but this pin carries "
+                    f"no verifiable WAR asset — builds will REFUSE until "
+                    f"'carlos-ctl source update' re-resolves or {app.prefix}_ARTIFACT "
+                    f"is auto/source"
+                )
+            else:
+                log(
+                    f"NOTE: {app.prefix}_ARTIFACT={forced} overrides the pinned "
+                    f"artifact — the next {app.label} build uses {forced}"
+                )
 
 
 def cmd_source(runner: Runner, args: List[str]) -> int:
@@ -513,6 +575,7 @@ def cmd_source(runner: Runner, args: List[str]) -> int:
         # Refresh every app still under auto policy; a manual <APP>_REF masks
         # its pin entirely, so re-resolving it would only mislead — say so
         # and leave it alone.
+        auto_apps = []
         for app in APPS:
             if runner.settings.get(f"{app.prefix}_REF") != "auto":
                 warn(
@@ -521,12 +584,23 @@ def cmd_source(runner: Runner, args: List[str]) -> int:
                     f"skipping (set {_manual_key(app)} to 'auto' to manage it here)"
                 )
                 continue
-            old = read_pin(runner, app)
-            pin = resolve_policy(runner, app)
+            auto_apps.append(app)
+        if not auto_apps:
+            log("nothing to update — every app ref is manual; there is no pin to move")
+            return 0
+        # Resolve EVERY app before writing ANY pin: a mid-loop failure (rate
+        # limit, one repo's partial outage) must not leave the pair
+        # half-updated — the sibling-alignment invariant the provisioning
+        # assert preaches applies to this verb first of all.
+        resolved = [
+            (app, read_pin(runner, app), resolve_policy(runner, app))
+            for app in auto_apps
+        ]
+        for app, before, pin in resolved:
             write_pin(runner, app, pin, implicit=False)
-            if old is not None and (old.ref, old.artifact) != (pin.ref, pin.artifact):
-                log(f"{app.label} updated: {old.describe()} -> {pin.describe()}")
-            elif old is not None:
+            if before is not None and (before.ref, before.artifact) != (pin.ref, pin.artifact):
+                log(f"{app.label} updated: {before.describe()} -> {pin.describe()}")
+            elif before is not None:
                 log(f"{app.label} already current: {pin.describe()}")
             else:
                 log(f"{app.label} pinned: {pin.describe()}")
@@ -567,9 +641,27 @@ def cmd_source(runner: Runner, args: List[str]) -> int:
                 raise CtlError(_USAGE)
         if not spec:
             raise CtlError(_USAGE)
+        # The PERSISTENT artifact setting, read before _resolve_set_spec
+        # stages any --artifact override into _vals: the setting outlives
+        # this command and resolve_for_build re-applies it on every build, so
+        # a pin it will fight deserves a warning now, not a refusal later.
+        configured = _artifact_cfg(runner, target)
         pin = _resolve_set_spec(runner, target, spec, artifact)
         write_pin(runner, target, pin, implicit=False)
         log(f"pinned {target.label}: {pin.describe()}")
+        if configured == "war" and pin.artifact == "source":
+            if pin.war_url and pin.war_sha256:
+                warn(
+                    f"{target.prefix}_ARTIFACT=war is still set — the next build "
+                    f"OVERRIDES this pin and deploys the release WAR; set it to "
+                    f"auto/source to compile"
+                )
+            else:
+                warn(
+                    f"{target.prefix}_ARTIFACT=war is still set and this pin carries "
+                    f"no WAR — builds will REFUSE until {target.prefix}_ARTIFACT is "
+                    f"auto/source"
+                )
         if runner.settings.get(f"{target.prefix}_REF") != "auto":
             warn(
                 f"{target.prefix}_REF={runner.settings.get(f'{target.prefix}_REF')} is "
@@ -590,11 +682,30 @@ def _resolve_set_spec(runner: Runner, app: AppSource, spec: str, artifact: str) 
     branch name (so `source set develop` / `source set --drugref master`
     pins that branch's CURRENT head, sticky until the next update/set)."""
     s = runner.settings
+    # An explicit --artifact wins over <APP>_ARTIFACT for THIS pin on EVERY
+    # path. Stage it before branching: _pin_release AND _pin_branch read the
+    # setting, so an unstaged flag would be honored on the release path but
+    # silently discarded on the others (e.g. `set develop --artifact source`
+    # under a persistent <APP>_ARTIFACT=war used to be REFUSED by
+    # _pin_branch's setting check — against the operator's explicit ask).
+    if artifact:
+        s._vals[f"{app.prefix}_ARTIFACT"] = artifact  # noqa: SLF001 — per-run, like rebuild --ref
+    effective = artifact or _artifact_cfg(runner, app)
     if _SHA40.match(spec):
-        if artifact == "war":
+        if effective == "war":
+            # Refuse NOW, not at build time: writing a source pin here while
+            # war is demanded would report success and then brick every
+            # subsequent build (resolve_for_build's forced-war check) — the
+            # worst outcome for the air-gapped flow this path exists for.
             raise CtlError(
-                "--artifact war needs a RELEASE tag (WAR assets hang off releases, "
-                "not bare commits) — 'carlos-ctl source set <release-tag> --artifact war'"
+                "a bare commit has no WAR asset (WAR artifacts hang off releases)"
+                + (
+                    " — 'carlos-ctl source set <release-tag> --artifact war'"
+                    if artifact == "war" else
+                    f" and {app.prefix}_ARTIFACT=war demands one — pass "
+                    f"--artifact source, pin a release tag, or set "
+                    f"{app.prefix}_ARTIFACT to auto/source"
+                )
             )
         return SourcePin(
             ref=spec, kind="manual", commit=spec, artifact="source",
@@ -609,10 +720,6 @@ def _resolve_set_spec(runner: Runner, app: AppSource, spec: str, artifact: str) 
         )
     match = next((r for r in releases if str(r.get("tag_name")) == spec), None)
     if match is not None:
-        # Honor an explicit --artifact over the <APP>_ARTIFACT setting for
-        # this pin; _pin_release reads the setting, so stage the choice.
-        if artifact:
-            s._vals[f"{app.prefix}_ARTIFACT"] = artifact  # noqa: SLF001 — per-run, like rebuild --ref
         return _pin_release(runner, app, match, policy="manual")
     if artifact == "war":
         raise CtlError(

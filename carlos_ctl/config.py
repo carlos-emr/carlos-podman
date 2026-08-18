@@ -176,9 +176,9 @@ _DEFAULTS: Dict[str, str] = {
     # persisted in the source pin like the version is.
     "CARLOS_ARTIFACT": "auto",
     # The no-releases fallback branch for auto resolution: `main` is the
-    # app repo's stable/release branch (develop is promoted into it and
-    # releases are cut from it); operators tracking the development branch
-    # instead set a manual CARLOS_REF=develop.
+    # app repo's stable branch (`develop` is promoted into it for release);
+    # operators tracking the development branch instead set a manual
+    # CARLOS_REF=develop.
     "CARLOS_SOURCE_BRANCH": "main",
     "DRUGREF_REF": "auto",
     "DRUGREF_ARTIFACT": "auto",

@@ -20,12 +20,20 @@ import re
 import resource
 import time
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from .runner import Runner
 from .util import CtlError, log, warn
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
+
+# What cmd_build actually resolved and built, recorded for cmd_rebuild's
+# messages. Re-calling resolve_for_build there is NOT equivalent: if the
+# implicit pin write failed (full/read-only $EMR_HOME), a re-resolve hits the
+# network and can fail AFTER a successful promoted build — or describe a
+# release newer than the one in the image.
+_last_built: Dict[str, str] = {}
 
 
 def _build_dir(runner: Runner) -> Path:
@@ -148,6 +156,8 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     dpin = source_mod.resolve_for_build(runner, source_mod.DRUGREF)
     carlos_ref = pin.ref
     drugref_ref = dpin.ref
+    _last_built["carlos"] = pin.describe()
+    _last_built["drugref"] = dpin.describe()
 
     # Supply-chain gate. A branch name is a MOVING ref — the fetched tarball
     # has no checksum, so what gets built is whatever the branch points at
@@ -173,15 +183,17 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
                 continue
             if not _SHA40.match(p.ref):
                 raise CtlError(
-                    f"CARLOS_BUILD_MODE=release: {prefix}_REF='{p.ref}' is not a full "
-                    f"40-hex commit SHA — a release build must pin an immutable, "
-                    f"auditable source ref"
+                    f"CARLOS_BUILD_MODE=release: the {prefix} source ref '{p.ref}' is "
+                    f"not a full 40-hex commit SHA — a release build must pin an "
+                    f"immutable, auditable source (set {prefix}_REF to a commit, or "
+                    f"under {prefix}_REF=auto re-pin with 'carlos-ctl source update'/"
+                    f"'source set')"
                 )
-            if not s.get(f"{prefix}_SRC_SHA256"):
+            if not _SHA256_HEX.match(s.get(f"{prefix}_SRC_SHA256")):
                 raise CtlError(
-                    f"CARLOS_BUILD_MODE=release: {prefix}_SRC_SHA256 is unset — supply "
-                    f"the pinned tarball's sha256 (curl -sL <url> | sha256sum) so the "
-                    f"in-image integrity check runs"
+                    f"CARLOS_BUILD_MODE=release: {prefix}_SRC_SHA256 is not a 64-hex "
+                    f"sha256 — supply the pinned tarball's real digest (curl -sL <url> "
+                    f"| sha256sum) so the in-image integrity check can actually pass"
                 )
         # The Containerfiles' SOURCE_DATE_EPOCH plumbing is inert unless a
         # value is actually passed — a release build claiming auditability
@@ -210,8 +222,9 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         for prefix, p in gated:
             if p.artifact != "war" and not _SHA40.match(p.ref):
                 warn(
-                    f"{prefix}_REF='{p.ref}' is not a full commit SHA — the source fetch "
-                    f"is a moving, unverifiable ref; pin a 40-hex commit and set "
+                    f"the {prefix} source ref '{p.ref}' is not a full commit SHA — the "
+                    f"source fetch is a moving, unverifiable ref; pin a 40-hex commit "
+                    f"({prefix}_REF, or 'carlos-ctl source set') and set "
                     f"CARLOS_BUILD_MODE=release for an audited build"
                 )
 
@@ -428,13 +441,12 @@ def cmd_rebuild(runner: Runner, args: List[str]) -> int:
             raise CtlError(usage)
     log("Rebuild: images only — the database, documents, and backups are not touched")
     cmd_build(runner, ["--no-cache"])
-    # What was just built, for the messages below: after cmd_build the pin
-    # exists (auto mode) or the manual ref passes straight through, so this
-    # re-read is offline — and it never prints the raw `auto` sentinel.
-    from . import source as source_mod
-
-    built = source_mod.resolve_for_build(runner, source_mod.CARLOS).describe()
-    dbuilt = source_mod.resolve_for_build(runner, source_mod.DRUGREF).describe()
+    # What was just built, for the messages below — recorded by cmd_build
+    # itself (offline, and never the raw `auto` sentinel). Deliberately NOT a
+    # second resolve_for_build: that could hit the network (when the implicit
+    # pin write failed) and fail or misreport AFTER a successful build.
+    built = _last_built.get("carlos", "(see the build log above)")
+    dbuilt = _last_built.get("drugref", "(see the build log above)")
     # play's readiness gate (wait_app_ready) makes rc nonzero when the app
     # never turns healthy — a failed rebuild must not report "redeployed".
     if lifecycle2.cmd_play(runner, do_pull) != 0:
