@@ -1134,7 +1134,7 @@ survive a disable/enable round trip.
 Drug and interaction lookups run in the pod's `drugref` container, built by
 `carlos-ctl build` from
 [carlos-emr/drugref2026](https://github.com/carlos-emr/drugref2026) (version
-and WAR/source artifact selected exactly like CARLOS's — see
+and artifact — WAR, source, or prebuilt image — selected exactly like CARLOS's — see
 [Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)) — the
 same source and layout the upstream devcontainer uses
 (`.devcontainer/drugref/`). Wiring:
@@ -1871,11 +1871,13 @@ under that or raise `wait_timeout` alongside.
 ## Choosing the CARLOS and DrugRef versions
 
 Which CARLOS and DrugRef the images carry — and whether each build compiles
-its source or uses a published WAR — is governed by three vars **per app**
+its source, uses a published WAR, or pulls the release's prebuilt image — is
+governed by four vars **per app**
 (host_vars → rendered into `carlos-app.env`) plus one persisted **pin** per
 app. The contract is identical for both; DrugRef simply uses its own keys
 (`carlos_drugref_ref` / `carlos_drugref_artifact` /
-`carlos_drugref_source_branch` → `DRUGREF_*`) and its own pin file:
+`carlos_drugref_source_branch` / `carlos_drugref_image_repo` → `DRUGREF_*`)
+and its own pin file:
 
 - **`carlos_ref: auto` / `carlos_drugref_ref: auto`** (the defaults). The
   first `carlos-ctl build` resolves each app's newest **GitHub release** —
@@ -1897,11 +1899,18 @@ app. The contract is identical for both; DrugRef simply uses its own keys
   sha256-verified in-image against the release's published digest, no Maven
   compile — else the build compiles that exact release's source. CARLOS
   releases ship `carlos-<tag>.war`; DrugRef releases ship `drugref2.war`.
-  `war` / `source` force one side per app; the choice made under `auto` is
-  persisted in that app's pin. (In WAR mode the CARLOS login page shows the
-  release's own buildVersion, not a local build stamp.)
+  `war` / `source` force one side per app; `image` (opt-in only — `auto`
+  never selects it) pulls the release's prebuilt image by digest instead of
+  building (see [Prebuilt images](#prebuilt-images-app_artifactimage)). The
+  choice made under `auto` is persisted in that app's pin. (In WAR mode the
+  CARLOS login page shows the release's own buildVersion, not a local build
+  stamp.)
 - **`carlos_source_branch: main` / `carlos_drugref_source_branch:
   master`** — only used by each app's no-releases fallback.
+- **`carlos_image_repo` / `carlos_drugref_image_repo`** — the registry
+  repository `image` mode resolves digests from and pulls (defaults:
+  `ghcr.io/carlos-emr/carlos-app` / `ghcr.io/carlos-emr/carlos-drugref`);
+  override for an internal mirror.
 
 Day to day (`--drugref` targets the DrugRef pin; without it, CARLOS):
 
@@ -1910,6 +1919,7 @@ carlos-ctl source            # both pins, and what the next build does
 carlos-ctl source update     # re-resolve BOTH apps to their newest releases
 carlos-ctl source set 2026.08.0-alpha1                   # pin a CARLOS release (WAR-first)
 carlos-ctl source set 2026.08.0-alpha1 --artifact source # …but compile it
+carlos-ctl source set 2026.08.0-alpha1 --artifact image  # …or pull its prebuilt image
 carlos-ctl source set <40-hex-sha>                  # pin a CARLOS commit, offline
 carlos-ctl source set --drugref v1.0.0rc2           # pin a DrugRef release
 carlos-ctl source set --drugref master              # pin DrugRef master's CURRENT head
@@ -1930,13 +1940,24 @@ unreachable, `build` refuses with exactly that guidance. One more edge: a
 pin taken between "release published" and "WAR uploaded" records a source
 build — `source update` re-resolves it.
 
+**Upgrade note (default flip):** installs provisioned before the
+release-first `carlos_ref`/`carlos_drugref_ref` default rendered
+`CARLOS_REF=develop` and `DRUGREF_REF=master`, and any explicit
+value keeps exactly that behavior. But a host_vars file that never set
+`carlos_ref`/`carlos_drugref_ref` flips to `auto` (release-first) at its
+next playbook run + build — set `carlos_ref: develop` /
+`carlos_drugref_ref: master` to keep tracking the branches instead.
+Multi-instance hosts sharing one service user share one image store: keep
+sibling pins aligned (run `source update` in lockstep), as the provisioning
+assert already requires for the vars.
+
 ### Prebuilt images (`<APP>_ARTIFACT=image`)
 
 The third artifact, **opt-in only** (`auto` never selects it): instead of
 building locally, `carlos-ctl build` pulls the pinned release's **prebuilt
-multi-arch image** — published per app release to
-`ghcr.io/carlos-emr/carlos-app` / `ghcr.io/carlos-emr/carlos-drugref` by this
-repo's *Publish Images* workflow (see the supply-chain section) — **by
+multi-arch image** — published per app release, via a **manual dispatch** of
+this repo's *Publish Images* workflow (see the supply-chain section), to
+`ghcr.io/carlos-emr/carlos-app` / `ghcr.io/carlos-emr/carlos-drugref` — **by
 digest**, and feeds it through the exact same `:build-<stamp>` →
 `:previous`/`:latest` promotion, smoke test, rollback, and pod machinery as
 a local build. The pod spec keeps deploying `localhost/carlos-app:latest`;
@@ -1954,14 +1975,22 @@ nothing downstream changes.
 - **Verify before trusting** a digest you didn't just publish:
   `gh attestation verify oci://ghcr.io/carlos-emr/carlos-app:<tag>-rN --owner carlos-emr`.
 - **Air-gap / mirror**: a digest pin makes pin-time resolution offline, but
-  the `podman pull` itself still fetches layers from the configured registry
-  unless the image is already in the local store — a truly air-gapped host
-  needs the image preloaded (`podman save`/`podman load`, or a prior pull)
-  or `carlos_image_repo` / `carlos_drugref_image_repo` pointed at a
-  reachable internal mirror. The manual channel skips resolution entirely:
+  the `podman pull` itself still fetches from the configured registry unless
+  the image is already in the local store under that exact digest. A prior
+  `podman pull` on the same host satisfies later builds offline; to move
+  images into an air-gapped environment, replicate them into an internal
+  registry with a digest-preserving copy (`skopeo copy --all
+  --preserve-digests docker://ghcr.io/... docker://mirror/...`) and point
+  `carlos_image_repo` / `carlos_drugref_image_repo` at the mirror. (`podman
+  save`/`podman load` does NOT reliably preserve registry digests or
+  manifest lists — a loaded image may not match the pin.) The manual channel skips resolution entirely:
   `<APP>_REF=<tag>`, `<APP>_ARTIFACT=image`,
   `<APP>_IMAGE_DIGEST=<sha256:...>` (the digest is printed by every
-  *Publish Images* run summary).
+  *Publish Images* run summary). Under the full deployment, put
+  `<APP>_IMAGE_DIGEST` in **`carlos_extra_env`** (host_vars) — never
+  hand-edit `carlos-app.env`, which is playbook-owned and overwritten on
+  every run (the same applies to the manual WAR channel's
+  `<APP>_WAR_URL`/`<APP>_WAR_SHA256`).
 - **TLS-inspecting proxy**: pulls use podman's own trust —
   `/etc/containers/certs.d/ghcr.io/ca.crt` (the `CARLOS_EXTRA_CA_BUNDLE`
   build-stage hook deliberately does not apply; nothing compiles).
@@ -1969,16 +1998,6 @@ nothing downstream changes.
   satisfies the gate by construction — the digest IS the content checksum —
   so an all-image release build needs no `*_SRC_SHA256` and no
   `SOURCE_DATE_EPOCH`.
-
-**Upgrade note (default flip):** installs provisioned before this feature
-rendered `CARLOS_REF=develop` and `DRUGREF_REF=master`, and any explicit
-value keeps exactly that behavior. But a host_vars file that never set
-`carlos_ref`/`carlos_drugref_ref` flips to `auto` (release-first) at its
-next playbook run + build — set `carlos_ref: develop` /
-`carlos_drugref_ref: master` to keep tracking the branches instead.
-Multi-instance hosts sharing one service user share one image store: keep
-sibling pins aligned (run `source update` in lockstep), as the provisioning
-assert already requires for the vars.
 
 ## Updating
 
@@ -2993,8 +3012,11 @@ build (either app) satisfies the gate differently: it requires that app's
 pinned WAR sha256 (verified in-image) instead of its `*_SRC_SHA256`, and the
 compile-only layers apply only to images that actually compile (the
 dependency-lock profile exists in the CARLOS pom only; DrugRef has none).
-`SOURCE_DATE_EPOCH` is required whenever anything compiles — an all-WAR
-release build runs no compiler and needs no timestamp pin. Without
+A prebuilt-image artifact satisfies it by construction — its pinned digest
+IS the content checksum, so it needs neither a `*_SRC_SHA256` nor a WAR
+sha256. `SOURCE_DATE_EPOCH` is required whenever anything compiles — an
+all-WAR (or all-image, or mixed WAR/image) release build runs no compiler
+and needs no timestamp pin. Without
 `CARLOS_BUILD_MODE=release` (the default), a
 manually configured moving-branch ref only warns. Redeploy a specific pair with
 `carlos-ctl rebuild --ref <sha> --drugref-ref <sha>`. (`build` reads its

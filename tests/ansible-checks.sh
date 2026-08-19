@@ -330,7 +330,9 @@ echo "==> source selection: the default render carries the auto version/artifact
 # render — a template that drops one silently reverts an instance to manual
 # semantics (or the built-in default) on the next playbook run.
 for want in "^CARLOS_REF=auto" "^CARLOS_ARTIFACT=auto" "^CARLOS_SOURCE_BRANCH=main" \
-            "^DRUGREF_REF=auto" "^DRUGREF_ARTIFACT=auto" "^DRUGREF_SOURCE_BRANCH=master"; do
+            "^CARLOS_IMAGE_REPO=ghcr.io/carlos-emr/carlos-app" \
+            "^DRUGREF_REF=auto" "^DRUGREF_ARTIFACT=auto" "^DRUGREF_SOURCE_BRANCH=master" \
+            "^DRUGREF_IMAGE_REPO=ghcr.io/carlos-emr/carlos-drugref"; do
     if ! grep -q "$want" "$WORK/render-on/carlos-app.env"; then
         echo "FAIL: the default render is missing '$want' in carlos-app.env"
         fail=1

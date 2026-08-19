@@ -537,6 +537,16 @@ refute "a pull failure aborts BEFORE any tag moves" \
 refute "the failed pull moved no :previous/:latest tag" \
     bash -c "tail -n 6 '$STUBLOG' | grep -q ':previous'"
 assert "rollback works after an image-mode build" ctl "$HIMG" rollback
+# The air-gap preload contract: a digest already in the local store
+# (previously pulled, or a digest-preserving replica) is recognized — no
+# pull at all, straight to the retag and the unchanged promotion.
+m=$(mark)
+assert "a PRELOADED image digest builds without pulling" \
+    ctle "$HIMG" STUB_PRELOADED=1 -- build
+refute "the preloaded build issued no podman pull" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q 'podman pull'"
+assert "the preloaded image was still retagged to :build-<stamp>" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q 'tag ghcr.io/carlos-emr/carlos-app@sha256:eeee'"
 # Release published but its image not pushed yet: refuse with the
 # publish-images guidance, never silently fall back to another artifact.
 HIMG2="$WORK/h-image-missing"; mk_home "$HIMG2"

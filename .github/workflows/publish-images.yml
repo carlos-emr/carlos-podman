@@ -144,10 +144,33 @@ jobs:
           }
 
           ghcr_guard() {  # argv: image-path(owner/name) tag — fail if the manifest already exists
-            local path="$1" tag="$2" tok code
+            local path="$1" tag="$2" tok code name pkg_code
+            name="${path#*/}"
+            # A package that has NEVER existed cannot hold the tag — and ghcr
+            # may answer 401 (not 404) on manifest HEADs for a nonexistent
+            # package, which would misread as a guard failure on the very
+            # first publish. The Packages REST API answers a deterministic
+            # 404 for a missing package: check it first (org route, then the
+            # user route for forks under user accounts).
+            pkg_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/orgs/${OWNER}/packages/container/${name}")
+            if [ "$pkg_code" = "404" ]; then
+              pkg_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                --connect-timeout 10 --max-time 30 \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                "https://api.github.com/users/${OWNER}/packages/container/${name}")
+            fi
+            case "$pkg_code" in
+              404) echo "package ${name} has never been published — first publish, immutability guard passes"; return 0 ;;
+              200) ;;  # package exists — the manifest HEAD below decides
+              *)   echo "::error::could not determine whether package ${name} exists (HTTP ${pkg_code}) — refusing to publish blind"; return 1 ;;
+            esac
             tok=$(curl -fsS -u "x:${GH_TOKEN}" \
               "https://ghcr.io/token?service=ghcr.io&scope=repository:${path}:pull" \
-              | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+              | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])') \
+              || { echo "::error::ghcr token exchange failed for ${path} — cannot run the immutability guard"; return 1; }
             code=$(curl -sS -o /dev/null -w '%{http_code}' -I \
               -H "Authorization: Bearer ${tok}" \
               -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \

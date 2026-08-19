@@ -562,6 +562,10 @@ class TestImageMode:
         )
         defaults.update(kw)
         write_pin(r, app or CARLOS, SourcePin(**defaults), implicit=False)
+        # The pulled digest is absent from the local store unless a test
+        # explicitly preloads it (the short-circuit test re-scripts rc=0).
+        repo = defaults["image_ref"].rsplit(":", 1)[0]
+        r.script("image", "exists", f"{repo}@{defaults['image_digest']}", rc=1)
 
     def _both_image(self, mk_runner, env="", extra=None):
         from carlos_ctl.source import DRUGREF
@@ -639,6 +643,21 @@ class TestImageMode:
         assert r.called_with("runuser")
         # Staged for the DrugRef build stage, restored empty afterwards.
         assert (r.settings.emr_home / "build" / ".extra-ca-bundle.crt").read_text() == ""
+
+    def test_preloaded_image_skips_the_pull(self, mk_runner) -> None:
+        # The air-gap contract: a digest already in the local store
+        # (previously pulled, or replicated with a digest-preserving copy) is
+        # recognized — no registry contact, straight to the retag and the
+        # unchanged promotion machinery.
+        r = self._both_image(mk_runner)
+        for repo in ("ghcr.io/carlos-emr/carlos-app", "ghcr.io/carlos-emr/carlos-drugref"):
+            r.script("image", "exists", f"{repo}@{self._DIGEST}", rc=0)
+        assert cmd_build(r, []) == 0
+        assert not r.called_with("pull")
+        assert r.called_with(
+            "tag", f"ghcr.io/carlos-emr/carlos-app@{self._DIGEST}",
+            "localhost/carlos-app:build-imgstamp",
+        )
 
     def test_all_image_needs_no_containerfile(self, mk_runner) -> None:
         # An image-only host installs no build context — the Containerfile

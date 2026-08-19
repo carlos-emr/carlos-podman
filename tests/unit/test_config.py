@@ -517,3 +517,19 @@ class TestImageRepoKeys:
         for key in ("CARLOS_IMAGE_REPO", "DRUGREF_IMAGE_REPO"):
             assert key in _DEFAULTS
             assert not key.endswith("_IMAGE")
+
+
+class TestVersionCoherence:
+    """release.yml's tag gate reads only carlos_ctl.__version__; nothing
+    gates pyproject.toml — this test is the lockstep pin so the two can
+    never drift into a release whose wheel metadata disagrees."""
+
+    def test_dunder_version_matches_pyproject(self) -> None:
+        import re
+
+        import carlos_ctl
+
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        m = re.search(r'^version = "(.+)"$', pyproject.read_text(), re.M)
+        assert m is not None, "pyproject.toml has no version line"
+        assert m.group(1) == carlos_ctl.__version__
