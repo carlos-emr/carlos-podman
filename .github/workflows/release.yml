@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 CARLOS Contributors
+#
+# Manually dispatched release publisher: creates the SemVer tag on the
+# dispatched ref (normally main) and publishes the GitHub release with
+# generated notes. Guards that the tag matches carlos-ctl's own version
+# string so a release can never disagree with what `carlos-ctl version`
+# reports.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "SemVer tag to create and release (e.g. v2.0.0-beta1)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as prerelease (betas/RCs)"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Validate tag against carlos-ctl's version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          # SemVer 2.0.0 shape (numeric core + optional prerelease/build).
+          echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' \
+            || { echo "::error::'$TAG' is not a SemVer 2.0.0 tag"; exit 1; }
+          pkg=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' carlos_ctl/__init__.py)
+          [ "$v" = "$pkg" ] \
+            || { echo "::error::tag $v != carlos_ctl __version__ $pkg — bump the version first"; exit 1; }
+
+      - name: Create tag and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(--target "$GITHUB_SHA" --generate-notes)
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+          gh release create "$TAG" "${args[@]}"
