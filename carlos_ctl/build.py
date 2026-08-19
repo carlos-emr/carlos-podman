@@ -94,15 +94,27 @@ def _pull_prebuilt(
     as :build-<stamp>, from where the UNCHANGED smoke → :previous rotation →
     :latest promotion machinery takes over."""
     src = pin.image_ref.rsplit(":", 1)[0] + "@" + pin.image_digest
-    log(f"Pulling prebuilt {prefix} image {pin.image_ref} ({pin.image_digest[:19]}…)")
-    if not runner.ok(runner.podman_user_argv(["pull", src])):
-        raise CtlError(
-            f"pull failed for {src} — refusing to proceed (an artifact class is never "
-            f"silently substituted; :latest and :previous are untouched for both apps). "
-            f"Check network/registry reachability — for a TLS-inspecting proxy, place "
-            f"the proxy CA at /etc/containers/certs.d/<registry>/ca.crt — or build "
-            f"locally ({prefix}_ARTIFACT=auto)"
+    # Local-store short-circuit: `podman pull` contacts the registry for the
+    # manifest even when the exact digest is already present, so a preloaded
+    # image (podman save/load on an air-gapped host — the documented recipe)
+    # or a previously pulled one must be recognized here, not re-fetched.
+    # Content-addressed, so "present" IS "verified".
+    if runner.ok(runner.podman_user_argv(["image", "exists", src])):
+        log(
+            f"Prebuilt {prefix} image {pin.image_ref} ({pin.image_digest[:19]}…) is "
+            f"already in the local store (preloaded or previously pulled) — skipping "
+            f"the pull"
         )
+    else:
+        log(f"Pulling prebuilt {prefix} image {pin.image_ref} ({pin.image_digest[:19]}…)")
+        if not runner.ok(runner.podman_user_argv(["pull", src])):
+            raise CtlError(
+                f"pull failed for {src} — refusing to proceed (an artifact class is never "
+                f"silently substituted; :latest and :previous are untouched for both apps). "
+                f"Check network/registry reachability — for a TLS-inspecting proxy, place "
+                f"the proxy CA at /etc/containers/certs.d/<registry>/ca.crt — or build "
+                f"locally ({prefix}_ARTIFACT=auto)"
+            )
     if not runner.ok(runner.podman_user_argv(["tag", src, f"{local_repo}:build-{stamp}"])):
         raise CtlError(
             f"pulled {src} but could not tag it as {local_repo}:build-{stamp} — "

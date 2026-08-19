@@ -103,8 +103,12 @@ case "$1 $2" in
   "image exists")
       # Rollback guard: STUB_NO_DRUGREF_PREV makes only the drugref :previous
       # image absent (carlos :previous still present), so the lockstep check
-      # can be exercised. Everything else "exists".
+      # can be exercised.
       if [[ -n "${STUB_NO_DRUGREF_PREV:-}" && "$*" == *drugref*:previous* ]]; then exit 1; fi
+      # A digest ref (prebuilt image) is absent from the local store unless
+      # STUB_PRELOADED drives the air-gap preload short-circuit; local tags
+      # (":latest"/":previous" rotation checks) keep existing.
+      if [[ "$*" == *@sha256:* && -z "${STUB_PRELOADED:-}" ]]; then exit 1; fi
       exit 0;;
   "secret exists") exit 0;;
   "secret rm") exit "${STUB_SECRET_RM_RC:-0}";;

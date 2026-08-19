@@ -137,11 +137,12 @@ curl -s https://api.github.com/repos/carlos-emr/carlos/releases \
   | grep -E '"(tag_name|prerelease)"'
 ```
 
-**Path 0 — pull the prebuilt image (fastest, no build at all).** Each app
-release also gets a prebuilt multi-arch image on ghcr.io (published by this
-repo's *Publish Images* workflow). Pull it **by digest** (printed in that
-workflow's run summary, or resolved from the tag) and tag it as the local
-image the pod deploys:
+**Path 0 — pull the prebuilt image (fastest, no build at all).** App
+releases get a prebuilt multi-arch image on ghcr.io when a maintainer
+dispatches this repo's *Publish Images* workflow for them (manual, per
+release — a brand-new release may not have its image yet). Pull it **by
+digest** (printed in that workflow's run summary, or resolved from the tag)
+and tag it as the local image the pod deploys:
 
 ```bash
 podman pull ghcr.io/carlos-emr/carlos-app@sha256:<digest>

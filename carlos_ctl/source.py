@@ -521,10 +521,10 @@ def _pin_release(runner: Runner, app: AppSource, release: dict, *, policy: str) 
         if not digest:
             raise CtlError(
                 f"no published image for {app.label} {kind} {tag} at {repo}:{tag} — "
-                f"prebuilt images are published per app release by carlos-podman's "
-                f"'Publish Images' workflow; dispatch it (or wait for the backfill), "
-                f"check {app.prefix}_IMAGE_REPO, or fall back with "
-                f"{app.prefix}_ARTIFACT=auto/war/source"
+                f"prebuilt images are published per app release by a MANUAL dispatch "
+                f"of carlos-podman's 'Publish Images' workflow (Actions tab); dispatch "
+                f"it for this release, check {app.prefix}_IMAGE_REPO, or fall back "
+                f"with {app.prefix}_ARTIFACT=auto/war/source"
             )
         return SourcePin(
             ref=commit, kind=kind, tag=tag, commit=commit, artifact="image",
@@ -612,8 +612,10 @@ def _manual_pin(runner: Runner, app: AppSource) -> SourcePin:
     """Manual mode (<APP>_REF != auto): the historical semantics, verbatim —
     the configured ref (branch/tag/sha, e.g. an operator tracking `develop`
     or `master` deliberately) builds from source, no network, no pin file.
-    The one addition: <APP>_ARTIFACT=war works here too when the operator
-    supplies the URL+sha explicitly (the offline/air-gapped WAR channel)."""
+    Two additions: <APP>_ARTIFACT=war works here too when the operator
+    supplies the URL+sha explicitly (the offline/air-gapped WAR channel),
+    and <APP>_ARTIFACT=image with an explicit <APP>_IMAGE_DIGEST (its
+    prebuilt-image twin, handled first below)."""
     s = runner.settings
     ref = s.get(f"{app.prefix}_REF")
     artifact_cfg = _artifact_cfg(runner, app)
@@ -753,21 +755,21 @@ def _print_app(runner: Runner, app: AppSource) -> None:
     else:
         log(f"{app.label}: {pin.describe()}")
         if pin.tag:
-            print(f"    tag:         {pin.tag}")
+            print(f"    tag:          {pin.tag}")
         if pin.branch:
-            print(f"    branch:      {pin.branch}")
+            print(f"    branch:       {pin.branch}")
         if pin.commit:
-            print(f"    commit:      {pin.commit}")
-        print(f"    artifact:    {pin.artifact}")
+            print(f"    commit:       {pin.commit}")
+        print(f"    artifact:     {pin.artifact}")
         if pin.war_url:
-            print(f"    war url:     {pin.war_url}")
-            print(f"    war sha256:  {pin.war_sha256}")
+            print(f"    war url:      {pin.war_url}")
+            print(f"    war sha256:   {pin.war_sha256}")
         if pin.image_ref:
-            print(f"    image ref:   {pin.image_ref}")
+            print(f"    image ref:    {pin.image_ref}")
             print(f"    image digest: {pin.image_digest}")
         if pin.resolved_at:
-            print(f"    resolved at: {pin.resolved_at} ({pin.policy})")
-        print(f"    pin file:    {pin_path(runner, app)}")
+            print(f"    resolved at:  {pin.resolved_at} ({pin.policy})")
+        print(f"    pin file:     {pin_path(runner, app)}")
     if ref_cfg != "auto":
         warn(
             f"{app.prefix}_REF={ref_cfg} is set (manual mode) — the {app.label} pin "
