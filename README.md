@@ -1953,11 +1953,15 @@ nothing downstream changes.
   moves. An artifact class is never silently swapped for another.
 - **Verify before trusting** a digest you didn't just publish:
   `gh attestation verify oci://ghcr.io/carlos-emr/carlos-app:<tag>-rN --owner carlos-emr`.
-- **Air-gap / mirror**: point `carlos_image_repo` /
-  `carlos_drugref_image_repo` at an internal mirror, or skip resolution
-  entirely with the manual channel — `<APP>_REF=<tag>`,
-  `<APP>_ARTIFACT=image`, `<APP>_IMAGE_DIGEST=<sha256:...>` (the digest is
-  printed by every *Publish Images* run summary).
+- **Air-gap / mirror**: a digest pin makes pin-time resolution offline, but
+  the `podman pull` itself still fetches layers from the configured registry
+  unless the image is already in the local store — a truly air-gapped host
+  needs the image preloaded (`podman save`/`podman load`, or a prior pull)
+  or `carlos_image_repo` / `carlos_drugref_image_repo` pointed at a
+  reachable internal mirror. The manual channel skips resolution entirely:
+  `<APP>_REF=<tag>`, `<APP>_ARTIFACT=image`,
+  `<APP>_IMAGE_DIGEST=<sha256:...>` (the digest is printed by every
+  *Publish Images* run summary).
 - **TLS-inspecting proxy**: pulls use podman's own trust —
   `/etc/containers/certs.d/ghcr.io/ca.crt` (the `CARLOS_EXTRA_CA_BUNDLE`
   build-stage hook deliberately does not apply; nothing compiles).

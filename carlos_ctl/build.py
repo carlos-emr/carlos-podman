@@ -123,11 +123,9 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         raise CtlError("usage: carlos-ctl build [--use-cache]")
 
     here = _build_dir(runner)
-    if not (here / "Containerfile").is_file():
-        raise CtlError(
-            f"no Containerfile in {here} — the Ansible role installs the build context there "
-            f"(re-run the provisioning playbook), or set CARLOS_BUILD_DIR to a repo checkout"
-        )
+    # (The Containerfile presence check moved below the pin resolution: an
+    # all-image run never opens a Containerfile, so an image-only host — no
+    # local build context installed — must not be blocked by it.)
     # Same class of check as the nofile floor (below, once the pins say
     # whether anything builds locally at all), and for the same reason:
     # a too-narrow subuid/subgid grant does not surface until apt drops to
@@ -173,6 +171,11 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     # CA staging) have nothing to guard. The subid preflight above stays
     # unconditional: rootless PULLS also need the maps to chown layers.
     all_image = pin.artifact == "image" and dpin.artifact == "image"
+    if not all_image and not (here / "Containerfile").is_file():
+        raise CtlError(
+            f"no Containerfile in {here} — the Ansible role installs the build context there "
+            f"(re-run the provisioning playbook), or set CARLOS_BUILD_DIR to a repo checkout"
+        )
 
     ulimit_args: List[str] = []
     if not all_image:

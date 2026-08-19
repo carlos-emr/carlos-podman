@@ -56,6 +56,7 @@ import re
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import quote
 
 from .runner import Runner
 from .util import CtlError, atomic_write, log, warn
@@ -357,9 +358,11 @@ def _image_repo(runner: Runner, app: AppSource) -> str:
     digest; a value already carrying either would build a garbage ref."""
     value = runner.settings.get(f"{app.prefix}_IMAGE_REPO").strip().rstrip("/")
     # A colon after the last slash is a tag separator (registry ports sit
-    # before a slash: reg:5000/x is fine, ghcr.io/x:latest is not).
+    # before a slash: reg:5000/x is fine, ghcr.io/x:latest is not). A value
+    # with no slash at all is a bare host — fail fast here with the intended
+    # guidance instead of a later, less direct "no published image".
     tail = value.rsplit("/", 1)[-1]
-    if not value or "@" in value or ":" in tail:
+    if not value or "/" not in value or "@" in value or ":" in tail:
         raise CtlError(
             f"{app.prefix}_IMAGE_REPO='{value}' must be a bare registry repository "
             f"(host/namespace/name — no :tag, no @digest); the tag comes from the "
@@ -368,27 +371,33 @@ def _image_repo(runner: Runner, app: AppSource) -> str:
     return value
 
 
+def _header_value(raw: str, name: str) -> str:
+    """The (last) value of one HTTP response header from curl -I output,
+    matched case-insensitively; '' when absent."""
+    found = ""
+    for line in raw.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip().lower() == name:
+            found = value.strip()
+    return found
+
+
 def resolve_image_digest(runner: Runner, image_repo: str, tag: str) -> str:
     """The manifest-list digest of <image_repo>:<tag> via the OCI
-    distribution API (anonymous pull token + manifest HEAD), or '' on any
-    failure. The docker-content-digest header is the exact value
-    `podman pull <repo>@sha256:...` verifies — for the multi-arch lists the
-    publish workflow pushes, that is the LIST digest, which resolves the
-    right per-arch image on every host. Same Runner+curl boundary as the
-    GitHub API calls, so both test suites stub one seam."""
+    distribution API, or '' on any failure. The docker-content-digest header
+    is the exact value `podman pull <repo>@sha256:...` verifies — for the
+    multi-arch lists the publish workflow pushes, that is the LIST digest,
+    which resolves the right per-arch image on every host. Same Runner+curl
+    boundary as the GitHub API calls, so both test suites stub one seam.
+
+    Auth follows the distribution spec's challenge flow, so a configured
+    mirror works like ghcr does: an unauthenticated HEAD first (an anonymous
+    registry answers the digest outright); on a Bearer challenge, fetch a
+    pull token from the ADVERTISED realm (never a hardcoded endpoint,
+    accepting `token` or `access_token`) and retry with it."""
     host, _, path = image_repo.partition("/")
     if not host or not path:
         return ""
-    token = ""
-    tok_raw = runner.output([
-        "curl", "-fsS", "--max-time", "20",
-        f"https://{host}/token?service={host}&scope=repository:{path}:pull",
-    ], timeout=30)
-    if tok_raw:
-        try:
-            token = str(json.loads(tok_raw).get("token") or "")
-        except ValueError:
-            token = ""
     # HEAD, not GET: only the digest header is needed, never the manifest
     # body. Every list+manifest media type is accepted so the registry
     # answers with the canonical digest of whatever it stores.
@@ -398,18 +407,47 @@ def resolve_image_digest(runner: Runner, image_repo: str, tag: str) -> str:
         "application/vnd.oci.image.manifest.v1+json, "
         "application/vnd.docker.distribution.manifest.v2+json"
     )
-    auth = ["-H", f"Authorization: Bearer {token}"] if token else []
+    url = f"https://{host}/v2/{path}/manifests/{tag}"
+    # Probe WITHOUT -f: a 401 must still yield its headers — they carry the
+    # WWW-Authenticate challenge that names the token realm.
     out = runner.output([
-        "curl", "-fsSI", "--max-time", "20", *auth, "-H", accept,
-        f"https://{host}/v2/{path}/manifests/{tag}",
+        "curl", "-sSI", "--max-time", "20", "-H", accept, url,
     ], timeout=30)
-    for line in out.splitlines():
-        name, _, value = line.partition(":")
-        if name.strip().lower() == "docker-content-digest":
-            digest = value.strip().lower()
-            if _IMAGE_DIGEST.match(digest):
-                return digest
-    return ""
+    digest = _header_value(out, "docker-content-digest").lower()
+    if _IMAGE_DIGEST.match(digest):
+        return digest
+    challenge = _header_value(out, "www-authenticate")
+    if not challenge.lower().startswith("bearer"):
+        return ""
+    fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+    realm = fields.get("realm", "")
+    if not realm.startswith("https://"):
+        # Never chase a plaintext (or garbage) token endpoint: the token
+        # gates nothing secret here, but an http realm is a broken or
+        # hostile registry either way.
+        return ""
+    service = quote(fields.get("service", host), safe="")
+    scope = quote(fields.get("scope", f"repository:{path}:pull"), safe=":/")
+    sep = "&" if "?" in realm else "?"
+    tok_raw = runner.output([
+        "curl", "-fsS", "--max-time", "20",
+        f"{realm}{sep}service={service}&scope={scope}",
+    ], timeout=30)
+    token = ""
+    if tok_raw:
+        try:
+            data = json.loads(tok_raw)
+            token = str(data.get("token") or data.get("access_token") or "")
+        except ValueError:
+            token = ""
+    if not token:
+        return ""
+    out = runner.output([
+        "curl", "-fsSI", "--max-time", "20",
+        "-H", f"Authorization: Bearer {token}", "-H", accept, url,
+    ], timeout=30)
+    digest = _header_value(out, "docker-content-digest").lower()
+    return digest if _IMAGE_DIGEST.match(digest) else ""
 
 
 # --- policy -------------------------------------------------------------------

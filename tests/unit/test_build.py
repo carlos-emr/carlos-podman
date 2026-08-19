@@ -639,3 +639,24 @@ class TestImageMode:
         assert r.called_with("runuser")
         # Staged for the DrugRef build stage, restored empty afterwards.
         assert (r.settings.emr_home / "build" / ".extra-ca-bundle.crt").read_text() == ""
+
+    def test_all_image_needs_no_containerfile(self, mk_runner) -> None:
+        # An image-only host installs no build context — the Containerfile
+        # presence check must not block a run that never opens one.
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner("", {"BUILD_STAMP": "imgstamp"})
+        (r.settings.emr_home / "build").mkdir(parents=True, exist_ok=True)
+        self._image_pin(r)
+        self._image_pin(r, DRUGREF, image_ref=self._DIMG, tag="v1.0.0rc2")
+        assert cmd_build(r, []) == 0
+        assert r.called_with("pull", f"ghcr.io/carlos-emr/carlos-app@{self._DIGEST}")
+
+    def test_mixed_pair_still_requires_the_containerfile(self, mk_runner) -> None:
+        # The deferral is image-only: as soon as one app builds locally, the
+        # missing-context refusal fires before any podman call.
+        r = mk_runner(f"DRUGREF_REF={'b' * 40}\n", {"BUILD_STAMP": "imgstamp"})
+        (r.settings.emr_home / "build").mkdir(parents=True, exist_ok=True)
+        self._image_pin(r)
+        with pytest.raises(CtlError, match="no Containerfile"):
+            cmd_build(r, [])

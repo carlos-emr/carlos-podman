@@ -184,12 +184,13 @@
   # it fails the first build on the target.
   ansible.builtin.assert:
     that:
-      - carlos_artifact in ['auto', 'war', 'source']
-      - carlos_drugref_artifact in ['auto', 'war', 'source']
+      - carlos_artifact in ['auto', 'war', 'source', 'image']
+      - carlos_drugref_artifact in ['auto', 'war', 'source', 'image']
     fail_msg: >-
       carlos_artifact='{{ carlos_artifact }}' /
       carlos_drugref_artifact='{{ carlos_drugref_artifact }}' — each must be one
-      of auto (prefer the release's published WAR), war, or source.
+      of auto (prefer the release's published WAR), war, source, or image
+      (pull the release's prebuilt image by digest).
 
 - name: acme mode requires a real SERVER_NAME (HTTP-01 must resolve to this host)
   # The shipped default carlos_server_name is the documentation placeholder

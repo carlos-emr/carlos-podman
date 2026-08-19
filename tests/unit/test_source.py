@@ -851,10 +851,23 @@ _IMG_DIGEST = "sha256:" + "e" * 64
 
 
 def _ghcr(r, *, tag=None, digest=_IMG_DIGEST, repo="carlos-emr/carlos-app"):
-    """Script the two ghcr endpoints resolve_image_digest touches."""
+    """Script the ghcr endpoints resolve_image_digest touches, modelling the
+    real registry's behavior: the unauthenticated manifest HEAD answers a 401
+    Bearer challenge; the token realm grants an anonymous pull token; the
+    authorized retry carries the digest header."""
+    # Insertion order matters for the FakeRunner substring match: the
+    # authorized retry's argv contains BOTH the bearer token and the manifest
+    # URL, so the more specific script must come first.
+    r.script(
+        "Authorization: Bearer anon-token",
+        out=f"HTTP/2 200\nDocker-Content-Digest: {digest}\ncontent-length: 3\n",
+    )
     r.script("ghcr.io/token", out=json.dumps({"token": "anon-token"}))
     path = f"ghcr.io/v2/{repo}/manifests/" + (tag or "")
-    r.script(path, out=f"HTTP/2 200\nDocker-Content-Digest: {digest}\ncontent-length: 3\n")
+    r.script(path, out=(
+        'HTTP/2 401\nWww-Authenticate: Bearer realm="https://ghcr.io/token",'
+        f'service="ghcr.io",scope="repository:{repo}:pull"\n'
+    ))
 
 
 class TestImageArtifact:
@@ -895,10 +908,14 @@ class TestImageArtifact:
         got = source_mod.resolve_image_digest(
             r, "ghcr.io/carlos-emr/carlos-app", "2026.08.0")
         assert got == _IMG_DIGEST
-        # The manifest probe must be a HEAD (-I): the digest header is the
-        # answer, the body is never needed.
+        # Every manifest probe must be a HEAD (-I): the digest header is the
+        # answer, the body is never needed. The first probe is deliberately
+        # NOT -f (a 401 must still yield its challenge headers).
         head_calls = [c for c in r.calls if any("manifests" in a for a in c)]
-        assert head_calls and all("-fsSI" in c for c in head_calls)
+        assert len(head_calls) == 2
+        assert "-sSI" in head_calls[0] and "-fsSI" in head_calls[1]
+        # The token came from the ADVERTISED realm, not a hardcoded endpoint.
+        assert any("ghcr.io/token?service=ghcr.io" in a for c in r.calls for a in c)
 
     def test_resolve_image_digest_failures_return_empty(self, mk_runner) -> None:
         # Unreachable registry (nothing scripted -> empty curl output).
@@ -916,8 +933,40 @@ class TestImageArtifact:
                   out="docker-content-digest: sha256:notahexdigest\n")
         assert source_mod.resolve_image_digest(r3, "ghcr.io/x/y", "t") == ""
 
+    def test_resolve_image_digest_anonymous_registry_skips_the_token_dance(self, mk_runner) -> None:
+        # A mirror that answers the unauthenticated HEAD outright needs no
+        # token round-trip at all.
+        r = mk_runner()
+        r.script("mirror.internal/v2/x/y/manifests/t",
+                 out=f"HTTP/2 200\ndocker-content-digest: {_IMG_DIGEST}\n")
+        assert source_mod.resolve_image_digest(r, "mirror.internal/x/y", "t") == _IMG_DIGEST
+        assert not any("token" in a for c in r.calls for a in c)
+
+    def test_resolve_image_digest_follows_the_advertised_realm(self, mk_runner) -> None:
+        # A non-ghcr mirror advertising its own bearer realm and answering
+        # with access_token (both allowed by the distribution spec).
+        r = mk_runner()
+        r.script("Authorization: Bearer mirror-tok",
+                 out=f"HTTP/2 200\ndocker-content-digest: {_IMG_DIGEST}\n")
+        r.script("auth.mirror.internal/grant", out=json.dumps({"access_token": "mirror-tok"}))
+        r.script("mirror.internal/v2/x/y/manifests/t", out=(
+            'HTTP/2 401\nWWW-Authenticate: Bearer realm="https://auth.mirror.internal/grant",'
+            'service="mirror.internal"\n'
+        ))
+        assert source_mod.resolve_image_digest(r, "mirror.internal/x/y", "t") == _IMG_DIGEST
+        assert any("auth.mirror.internal/grant?service=mirror.internal" in a
+                   for c in r.calls for a in c)
+
+    def test_resolve_image_digest_refuses_a_plaintext_realm(self, mk_runner) -> None:
+        r = mk_runner()
+        r.script("mirror.internal/v2/x/y/manifests/t", out=(
+            'HTTP/2 401\nWWW-Authenticate: Bearer realm="http://evil.example/token"\n'
+        ))
+        assert source_mod.resolve_image_digest(r, "mirror.internal/x/y", "t") == ""
+
     def test_image_repo_with_tag_or_digest_is_refused(self, mk_runner) -> None:
-        for bad in ("ghcr.io/x/y:latest", "ghcr.io/x/y@sha256:" + "e" * 64, ""):
+        for bad in ("ghcr.io/x/y:latest", "ghcr.io/x/y@sha256:" + "e" * 64, "",
+                    "ghcr.io"):
             r = mk_runner(f"CARLOS_ARTIFACT=image\nCARLOS_IMAGE_REPO={bad}\n"
                           f"CARLOS_IMAGE_DIGEST={'e' * 64}\nCARLOS_REF=sometag\n")
             with pytest.raises(CtlError, match="bare registry repository"):

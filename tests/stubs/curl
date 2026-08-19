@@ -71,7 +71,14 @@ fi
 if [[ "$url" == https://ghcr.io/v2/*/manifests/* ]]; then
     [[ -n "${STUB_GHCR_DOWN:-}" ]] && exit 7
     [[ -n "${STUB_GHCR_MISSING:-}" ]] && exit 22
-    printf 'HTTP/2 200\ndocker-content-digest: %s\ncontent-length: 3\n' "$GHCR_DIGEST"
+    # Model the real ghcr: the unauthenticated HEAD answers a 401 Bearer
+    # challenge naming the token realm; the authorized retry gets the digest.
+    if [[ " $* " == *"Authorization: Bearer "* ]]; then
+        printf 'HTTP/2 200\ndocker-content-digest: %s\ncontent-length: 3\n' "$GHCR_DIGEST"
+    else
+        repo_path="${url#https://ghcr.io/v2/}"; repo_path="${repo_path%%/manifests/*}"
+        printf 'HTTP/2 401\nwww-authenticate: Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:%s:pull"\n' "$repo_path"
+    fi
     exit 0
 fi
 
