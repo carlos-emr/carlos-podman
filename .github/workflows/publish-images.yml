@@ -222,14 +222,17 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Enable arm64 emulation
-        # Distro package, not a third-party action/image: it registers the
-        # binfmt_misc handlers buildah needs for the arm64 leg. WAR mode runs
-        # no compiler under emulation, so the qemu cost is only the runtime
-        # stage's apt/unzip steps.
+      - name: Install podman and arm64 emulation
+        # Distro packages, not third-party actions/images: qemu-user-static
+        # registers the binfmt_misc handlers buildah needs for the arm64 leg
+        # (WAR mode runs no compiler under emulation, so the qemu cost is
+        # only the runtime stage's apt/unzip steps), and podman is installed
+        # explicitly rather than assumed from the runner image so the
+        # workflow stays self-contained across runner image changes.
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends qemu-user-static
+          sudo apt-get install -y -qq --no-install-recommends podman qemu-user-static
+          podman version
 
       - name: Build per-arch images and smoke-test before any push
         env:
