@@ -172,8 +172,10 @@ _DEFAULTS: Dict[str, str] = {
     "CARLOS_REF": "auto",
     # Artifact for the selected version: `auto` prefers the release's
     # published WAR (sha256-verified, no Maven compile), falling back to a
-    # source compile; `war`/`source` force one side. The auto choice is
-    # persisted in the source pin like the version is.
+    # source compile; `war`/`source` force one side; `image` (opt-in only —
+    # auto NEVER selects it) pulls the release's prebuilt ghcr.io image by
+    # digest instead of building locally. The auto choice is persisted in
+    # the source pin like the version is.
     "CARLOS_ARTIFACT": "auto",
     # The no-releases fallback branch for auto resolution: `main` is the
     # app repo's stable branch (`develop` is promoted into it for release);
@@ -186,6 +188,14 @@ _DEFAULTS: Dict[str, str] = {
     "DRUGREF_SOURCE_BRANCH": "master",
     "CARLOS_SRC_SHA256": "",
     "DRUGREF_SRC_SHA256": "",
+    # Registry repositories for <APP>_ARTIFACT=image (repo only — no tag, no
+    # digest; the tag comes from the pinned release, the digest is resolved
+    # at pin time and recorded in the source pin). Overriding these is the
+    # mirror/air-gap channel (point at an internal registry mirror).
+    # Deliberately NOT named *_IMAGE: validate.validate_image_digests warns
+    # on digest-less *_IMAGE keys, and a repo-only value is correct here.
+    "CARLOS_IMAGE_REPO": "ghcr.io/carlos-emr/carlos-app",
+    "DRUGREF_IMAGE_REPO": "ghcr.io/carlos-emr/carlos-drugref",
     "CARLOS_DB_ROOT_PASSWORD": "",
     # Observability profile: 1 = obs pod + vmagent/mysqld-exporter in the app
     # pod + vmalert-backed monitoring; 0 = journald-only logging, monitor runs
@@ -257,6 +267,11 @@ _EXTRA_KNOWN_KEYS = frozenset({
     # SECRET_ENV_KEYS, so the DR secrets-stripped env copy keeps them.
     "CARLOS_WAR_URL", "CARLOS_WAR_SHA256",
     "DRUGREF_WAR_URL", "DRUGREF_WAR_SHA256",
+    # Manual/air-gapped IMAGE channel, the exact mirror of the WAR pair
+    # above: with a manual <APP>_REF and <APP>_ARTIFACT=image, these supply
+    # the mandatory manifest-list digest (sha256:<64-hex> or bare hex) that
+    # `podman pull <repo>@<digest>` verifies. Public digests — not secrets.
+    "CARLOS_IMAGE_DIGEST", "DRUGREF_IMAGE_DIGEST",
     "CARLOS_RESTORE_ACCEPT_UNSHIPPED",
     "CARLOS_RESTORE_BASE_DUMP_ONLY",
     "CARLOS_RESTORE_CONFIRMED", "CARLOS_SEAL_NO_TPM",

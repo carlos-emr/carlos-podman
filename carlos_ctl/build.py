@@ -20,10 +20,13 @@ import re
 import resource
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 from .runner import Runner
 from .util import CtlError, log, warn
+
+if TYPE_CHECKING:
+    from .source import SourcePin
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_HEX = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -82,6 +85,31 @@ def _service_nofile_hard(runner: Runner) -> int:
         return hard
 
 
+def _pull_prebuilt(
+    runner: Runner, pin: SourcePin, local_repo: str, stamp: str, prefix: str
+) -> None:
+    """<APP>_ARTIFACT=image: pull the pinned prebuilt image BY DIGEST (the
+    registry/transport is irrelevant to integrity — podman verifies the
+    digest, the same argument as the digest-pinned base images) and tag it
+    as :build-<stamp>, from where the UNCHANGED smoke → :previous rotation →
+    :latest promotion machinery takes over."""
+    src = pin.image_ref.rsplit(":", 1)[0] + "@" + pin.image_digest
+    log(f"Pulling prebuilt {prefix} image {pin.image_ref} ({pin.image_digest[:19]}…)")
+    if not runner.ok(runner.podman_user_argv(["pull", src])):
+        raise CtlError(
+            f"pull failed for {src} — refusing to proceed (an artifact class is never "
+            f"silently substituted; :latest and :previous are untouched for both apps). "
+            f"Check network/registry reachability — for a TLS-inspecting proxy, place "
+            f"the proxy CA at /etc/containers/certs.d/<registry>/ca.crt — or build "
+            f"locally ({prefix}_ARTIFACT=auto)"
+        )
+    if not runner.ok(runner.podman_user_argv(["tag", src, f"{local_repo}:build-{stamp}"])):
+        raise CtlError(
+            f"pulled {src} but could not tag it as {local_repo}:build-{stamp} — "
+            f"NOT promoting; :latest and :previous are untouched for both apps"
+        )
+
+
 def cmd_build(runner: Runner, args: List[str]) -> int:
     """[--use-cache]  Default --no-cache: `ADD <url>` caches on the URL string,
     so a cached same-ref build can silently ship a STALE source tarball for a
@@ -100,27 +128,8 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
             f"no Containerfile in {here} — the Ansible role installs the build context there "
             f"(re-run the provisioning playbook), or set CARLOS_BUILD_DIR to a repo checkout"
         )
-    # The Maven build (and javac inside it) opens thousands of files; the
-    # common 1024 nofile soft default dies with "Too many open files" ~20 min
-    # in. The builds below pass --ulimit nofile explicitly (soft is raised to
-    # the service user's hard limit, capped at the QUICKSTART's 65536), so
-    # only a LOW HARD limit still bites — measured across the same runuser
-    # boundary the build runs under. Warn, don't refuse: the measurement is
-    # best-effort and a marginal build may still fit.
-    nofile_hard = _service_nofile_hard(runner)
-    if nofile_hard != resource.RLIM_INFINITY and nofile_hard < _NOFILE_WARN_FLOOR:
-        warn(
-            f"the service user's nofile hard limit is {nofile_hard} — the Maven build can "
-            f"die with 'Too many open files' (4096 is the verified floor for the current "
-            f"forked-compiler Containerfile; QUICKSTART recommends 65536). Raise it for "
-            f"the service user (LimitNOFILE=, or /etc/security/limits.d) before a long build"
-        )
-    nofile_eff = (
-        _NOFILE_TARGET if nofile_hard == resource.RLIM_INFINITY
-        else min(_NOFILE_TARGET, nofile_hard)
-    )
-    ulimit_args = ["--ulimit", f"nofile={nofile_eff}:{nofile_eff}"]
-    # Same class of check as the nofile floor above, and for the same reason:
+    # Same class of check as the nofile floor (below, once the pins say
+    # whether anything builds locally at all), and for the same reason:
     # a too-narrow subuid/subgid grant does not surface until apt drops to
     # uid 65534 in the RUNTIME stage — tens of minutes into the build, as
     # `setgroups (22: Invalid argument)`, which reads like an image bug. Say
@@ -159,6 +168,35 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     drugref_ref = dpin.ref
     _last_built["carlos"] = pin.describe()
     _last_built["drugref"] = dpin.describe()
+    # <APP>_ARTIFACT=image pulls the prebuilt image by digest instead of
+    # building — when BOTH apps do, the local-build preflights (nofile probe,
+    # CA staging) have nothing to guard. The subid preflight above stays
+    # unconditional: rootless PULLS also need the maps to chown layers.
+    all_image = pin.artifact == "image" and dpin.artifact == "image"
+
+    ulimit_args: List[str] = []
+    if not all_image:
+        # The Maven build (and javac inside it) opens thousands of files; the
+        # common 1024 nofile soft default dies with "Too many open files"
+        # ~20 min in. The builds below pass --ulimit nofile explicitly (soft
+        # is raised to the service user's hard limit, capped at the
+        # QUICKSTART's 65536), so only a LOW HARD limit still bites —
+        # measured across the same runuser boundary the build runs under.
+        # Warn, don't refuse: the measurement is best-effort and a marginal
+        # build may still fit.
+        nofile_hard = _service_nofile_hard(runner)
+        if nofile_hard != resource.RLIM_INFINITY and nofile_hard < _NOFILE_WARN_FLOOR:
+            warn(
+                f"the service user's nofile hard limit is {nofile_hard} — the Maven build can "
+                f"die with 'Too many open files' (4096 is the verified floor for the current "
+                f"forked-compiler Containerfile; QUICKSTART recommends 65536). Raise it for "
+                f"the service user (LimitNOFILE=, or /etc/security/limits.d) before a long build"
+            )
+        nofile_eff = (
+            _NOFILE_TARGET if nofile_hard == resource.RLIM_INFINITY
+            else min(_NOFILE_TARGET, nofile_hard)
+        )
+        ulimit_args = ["--ulimit", f"nofile={nofile_eff}:{nofile_eff}"]
 
     # Supply-chain gate. A branch name is a MOVING ref — the fetched tarball
     # has no checksum, so what gets built is whatever the branch points at
@@ -174,6 +212,12 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     if s.get("CARLOS_BUILD_MODE") == "release":
         build_dep_lock = "1"
         for prefix, p in gated:
+            if p.artifact == "image":
+                # A prebuilt-image pin IS content-checksummed by construction:
+                # read_pin and _manual_pin both refuse a digest-less image
+                # pin, and the pull verifies that digest — nothing further to
+                # gate (no compile, so no SRC_SHA256/SOURCE_DATE_EPOCH).
+                continue
             if p.artifact == "war":
                 if not p.war_sha256:
                     raise CtlError(
@@ -199,9 +243,9 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         # The Containerfiles' SOURCE_DATE_EPOCH plumbing is inert unless a
         # value is actually passed — a release build claiming auditability
         # must pin its build timestamp too, or two "identical" release builds
-        # diverge on embedded times. Compile-only: an all-WAR release build
-        # runs no compiler, so there is no local timestamp to pin.
-        if any(p.artifact != "war" for _, p in gated) and not s.get("SOURCE_DATE_EPOCH"):
+        # diverge on embedded times. Compile-only: WAR and prebuilt-image
+        # release builds run no compiler, so there is no local timestamp to pin.
+        if any(p.artifact == "source" for _, p in gated) and not s.get("SOURCE_DATE_EPOCH"):
             raise CtlError(
                 "CARLOS_BUILD_MODE=release: SOURCE_DATE_EPOCH is unset — pin the build "
                 "timestamp (e.g. the source commit's: git show -s --format=%ct <sha>) "
@@ -212,16 +256,19 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         # what is enforced rather than imply more.
         lock_note = (
             "Maven dependency-lock enforced (CARLOS compile; DrugRef has no lock profile)"
-            if pin.artifact != "war"
-            else "no local compile for CARLOS (published WAR verified by sha256)"
+            if pin.artifact == "source"
+            else "no local compile for CARLOS ("
+            + ("prebuilt image pulled by digest" if pin.artifact == "image"
+               else "published WAR verified by sha256") + ")"
         )
         log(f"RELEASE build: every source commit-pinned and content-checksummed; {lock_note}")
     else:
-        # A WAR-artifact build is sha256-verified in-image regardless of
-        # mode, so only a SOURCE build with a moving ref deserves the nag
-        # (auto pins are commit SHAs by construction and stay silent too).
+        # WAR and image artifacts are content-verified regardless of mode
+        # (sha256 in-image / digest at pull), so only a SOURCE build with a
+        # moving ref deserves the nag (auto pins are commit SHAs by
+        # construction and stay silent too).
         for prefix, p in gated:
-            if p.artifact != "war" and not _SHA40.match(p.ref):
+            if p.artifact == "source" and not _SHA40.match(p.ref):
                 warn(
                     f"the {prefix} source ref '{p.ref}' is not a full commit SHA — the "
                     f"source fetch is a moving, unverifiable ref; pin a 40-hex commit "
@@ -229,11 +276,10 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
                     f"CARLOS_BUILD_MODE=release for an audited build"
                 )
 
-    # Build-then-PROMOTE: both images build under :build-<stamp> only, and
-    # :latest moves for BOTH after BOTH succeed — a drugref build failure
-    # must not leave a mismatched carlos:latest(new)/drugref:latest(old)
-    # pair for the next play to deploy.
-    log(f"Building {carlos_repo}:build-{stamp} from carlos-emr/carlos {pin.describe()}")
+    # Build-then-PROMOTE: both images build (or pull, artifact=image) under
+    # :build-<stamp> only, and :latest moves for BOTH after BOTH succeed — a
+    # drugref failure must not leave a mismatched carlos:latest(new)/
+    # drugref:latest(old) pair for the next play to deploy.
     # CARLOS_SRC_SHA256/DRUGREF_SRC_SHA256 (empty by default) enable in-image
     # tarball integrity verification for audited release builds.
     # SOURCE_DATE_EPOCH is only forwarded when set — the Containerfile ARG
@@ -253,7 +299,10 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     # the repo/role so a fresh checkout's COPY never fails; we self-heal it and
     # always restore that neutral empty state after the builds.
     ca_ctx = here / ".extra-ca-bundle.crt"
-    extra_ca = s.get("CARLOS_EXTRA_CA_BUNDLE")  # env file OR process env
+    # All-image runs never enter a build stage, so there is no build-stage
+    # trust store to populate — skip the staging (podman PULL trust is host
+    # policy: /etc/containers/certs.d/<registry>/ca.crt, see the README).
+    extra_ca = "" if all_image else s.get("CARLOS_EXTRA_CA_BUNDLE")  # env file OR process env
     if extra_ca:
         try:
             content = Path(extra_ca).read_text()
@@ -270,7 +319,7 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         ca_ctx.write_text(content)  # CA certs are public material (0644 umask)
         log(f"staging {extra_ca} into the build context (build-stage trust only — "
             f"not baked into the runtime images)")
-    else:
+    elif not all_image:
         ca_ctx.write_text("")  # self-heal: keep the placeholder present-but-empty
     # WAR-artifact builds select the Containerfiles' `download` stage (the
     # published, sha256-verified release WAR) instead of the Maven compile;
@@ -293,34 +342,42 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
         if dpin.artifact == "war" else []
     )
     try:
-        cp = runner.podman_user([
-            "build", *cache_args, *format_args, *epoch_args, *ulimit_args,
-            "--build-arg", f"CARLOS_REF={carlos_ref}",
-            "--build-arg", f"CARLOS_SRC_SHA256={s.get('CARLOS_SRC_SHA256')}",
-            "--build-arg", f"BUILD_DEP_LOCK={build_dep_lock}",
-            *war_args,
-            # Names the build in the app's own buildVersion string, which
-            # CARLOS renders on the login page — same stamp as the image tag
-            # below, so the running page identifies its image. See the
-            # CARLOS_BUILD_STAMP block in the Containerfile.
-            "--build-arg", f"CARLOS_BUILD_STAMP={stamp}",
-            "-t", f"{carlos_repo}:build-{stamp}",
-            "-f", str(here / "Containerfile"), str(here),
-        ])
-        if cp.returncode != 0:
-            raise CtlError(f"build failed for {carlos_image}")
-        log(f"Building {drugref_repo}:build-{stamp} from carlos-emr/drugref2026 "
-            f"{dpin.describe()}")
-        cp = runner.podman_user([
-            "build", *cache_args, *format_args, *epoch_args, *ulimit_args,
-            "--build-arg", f"DRUGREF_REF={drugref_ref}",
-            "--build-arg", f"DRUGREF_SRC_SHA256={s.get('DRUGREF_SRC_SHA256')}",
-            *drugref_war_args,
-            "-t", f"{drugref_repo}:build-{stamp}",
-            "-f", str(here / "Containerfile.drugref"), str(here),
-        ])
-        if cp.returncode != 0:
-            raise CtlError(f"build failed for {drugref_image}")
+        if pin.artifact == "image":
+            _pull_prebuilt(runner, pin, carlos_repo, stamp, "CARLOS")
+        else:
+            log(f"Building {carlos_repo}:build-{stamp} from carlos-emr/carlos "
+                f"{pin.describe()}")
+            cp = runner.podman_user([
+                "build", *cache_args, *format_args, *epoch_args, *ulimit_args,
+                "--build-arg", f"CARLOS_REF={carlos_ref}",
+                "--build-arg", f"CARLOS_SRC_SHA256={s.get('CARLOS_SRC_SHA256')}",
+                "--build-arg", f"BUILD_DEP_LOCK={build_dep_lock}",
+                *war_args,
+                # Names the build in the app's own buildVersion string, which
+                # CARLOS renders on the login page — same stamp as the image tag
+                # below, so the running page identifies its image. See the
+                # CARLOS_BUILD_STAMP block in the Containerfile.
+                "--build-arg", f"CARLOS_BUILD_STAMP={stamp}",
+                "-t", f"{carlos_repo}:build-{stamp}",
+                "-f", str(here / "Containerfile"), str(here),
+            ])
+            if cp.returncode != 0:
+                raise CtlError(f"build failed for {carlos_image}")
+        if dpin.artifact == "image":
+            _pull_prebuilt(runner, dpin, drugref_repo, stamp, "DRUGREF")
+        else:
+            log(f"Building {drugref_repo}:build-{stamp} from carlos-emr/drugref2026 "
+                f"{dpin.describe()}")
+            cp = runner.podman_user([
+                "build", *cache_args, *format_args, *epoch_args, *ulimit_args,
+                "--build-arg", f"DRUGREF_REF={drugref_ref}",
+                "--build-arg", f"DRUGREF_SRC_SHA256={s.get('DRUGREF_SRC_SHA256')}",
+                *drugref_war_args,
+                "-t", f"{drugref_repo}:build-{stamp}",
+                "-f", str(here / "Containerfile.drugref"), str(here),
+            ])
+            if cp.returncode != 0:
+                raise CtlError(f"build failed for {drugref_image}")
     finally:
         # Never leave the operator CA staged in the context after the build.
         if extra_ca:

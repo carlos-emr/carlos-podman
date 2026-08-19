@@ -540,3 +540,102 @@ class TestRebuildDescribesWhatWasBuilt:
         # _resolve_app, not this wrapper); nothing in the rebuild path calls
         # resolve_for_build at all — the messages come from cmd_build's record.
         assert calls["n"] == 0
+
+
+class TestImageMode:
+    """<APP>_ARTIFACT=image in cmd_build: pull the pinned prebuilt image by
+    DIGEST, retag it into :build-<stamp>, and let the unchanged smoke →
+    :previous rotation → :latest promotion machinery gate it — pod YAML,
+    quadlets, rollback and validate.py keep seeing localhost/ tags only."""
+
+    _DIGEST = "sha256:" + "e" * 64
+    _IMG = "ghcr.io/carlos-emr/carlos-app:2026.08.0"
+    _DIMG = "ghcr.io/carlos-emr/carlos-drugref:v1.0.0rc2"
+
+    def _image_pin(self, r, app=None, *, image_ref=None, **kw) -> None:
+        from carlos_ctl.source import CARLOS, SourcePin, write_pin
+
+        defaults = dict(
+            ref=_SHA, kind="release", tag="2026.08.0", commit=_SHA,
+            artifact="image", image_ref=image_ref or self._IMG,
+            image_digest=self._DIGEST,
+        )
+        defaults.update(kw)
+        write_pin(r, app or CARLOS, SourcePin(**defaults), implicit=False)
+
+    def _both_image(self, mk_runner, env="", extra=None):
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner(env, {"BUILD_STAMP": "imgstamp", **(extra or {})})
+        _seed_build_ctx(r)
+        self._image_pin(r)
+        self._image_pin(r, DRUGREF, image_ref=self._DIMG, tag="v1.0.0rc2")
+        return r
+
+    def test_image_pins_pull_by_digest_and_promote(self, mk_runner) -> None:
+        r = self._both_image(mk_runner)
+        assert cmd_build(r, []) == 0
+        assert r.called_with("pull", f"ghcr.io/carlos-emr/carlos-app@{self._DIGEST}")
+        assert r.called_with("pull", f"ghcr.io/carlos-emr/carlos-drugref@{self._DIGEST}")
+        assert r.called_with(
+            "tag", f"ghcr.io/carlos-emr/carlos-app@{self._DIGEST}",
+            "localhost/carlos-app:build-imgstamp")
+        # Never a local build, but the full promotion still runs.
+        assert not any(c[:2] == ["podman", "build"] for c in r.calls)
+        assert r.called_with(
+            "tag", "localhost/carlos-app:build-imgstamp", "localhost/carlos-app:latest")
+        # The promotion smoke gates the PULLED image too.
+        assert r.called_with("--entrypoint", "/usr/bin/test")
+
+    def test_pull_failure_aborts_before_any_tag_moves(self, mk_runner) -> None:
+        r = self._both_image(mk_runner)
+        r.script("podman", "pull", rc=1)
+        with pytest.raises(CtlError, match="pull failed .* never .*substituted"):
+            cmd_build(r, [])
+        assert not r.called_with(":previous")
+        assert not r.called_with("localhost/carlos-app:latest")
+
+    def test_mixed_pair_builds_one_and_pulls_the_other(self, mk_runner) -> None:
+        r = mk_runner(f"DRUGREF_REF={'b' * 40}\n", {"BUILD_STAMP": "imgstamp"})
+        _seed_build_ctx(r)
+        self._image_pin(r)  # CARLOS: prebuilt image
+        assert cmd_build(r, []) == 0
+        assert r.called_with("pull", f"ghcr.io/carlos-emr/carlos-app@{self._DIGEST}")
+        drugref_builds = [c for c in r.calls
+                          if "build" in c and "Containerfile.drugref" in " ".join(c)]
+        assert len(drugref_builds) == 1
+
+    def test_release_mode_all_image_needs_no_compile_pins(self, mk_runner) -> None:
+        # The pin's digest IS the content checksum: no SRC_SHA256, no
+        # SOURCE_DATE_EPOCH — the release gate must pass without them.
+        r = self._both_image(mk_runner, "CARLOS_BUILD_MODE=release\n")
+        assert cmd_build(r, []) == 0
+        assert (r.settings.emr_home / "build" / ".build-mode").read_text().strip() == "release"
+
+    def test_dev_mode_image_pins_never_trip_the_moving_ref_nag(self, mk_runner, capsys) -> None:
+        r = self._both_image(mk_runner)
+        assert cmd_build(r, []) == 0
+        assert "moving, unverifiable ref" not in capsys.readouterr().err
+
+    def test_all_image_skips_ca_staging_and_nofile_probe(self, mk_runner) -> None:
+        # CARLOS_EXTRA_CA_BUNDLE points nowhere: a local build would refuse,
+        # an all-image run never enters a build stage and must not read it.
+        r = self._both_image(mk_runner, "CARLOS_EXTRA_CA_BUNDLE=/nonexistent.pem\n")
+        assert cmd_build(r, []) == 0
+        assert not r.called_with("runuser")  # the nofile probe crosses runuser
+        # The committed placeholder stays untouched (no staging happened).
+        assert (r.settings.emr_home / "build" / ".extra-ca-bundle.crt").exists() is False
+
+    def test_mixed_pair_still_probes_and_stages(self, mk_runner, tmp_path) -> None:
+        pem = tmp_path / "proxy-ca.pem"
+        pem.write_text("-----BEGIN CERTIFICATE-----\nzz\n-----END CERTIFICATE-----\n")
+        r = mk_runner(
+            f"DRUGREF_REF={'b' * 40}\nCARLOS_EXTRA_CA_BUNDLE={pem}\n",
+            {"BUILD_STAMP": "imgstamp"},
+        )
+        _seed_build_ctx(r)
+        self._image_pin(r)  # CARLOS image; DrugRef compiles
+        assert cmd_build(r, []) == 0
+        assert r.called_with("runuser")
+        # Staged for the DrugRef build stage, restored empty afterwards.
+        assert (r.settings.emr_home / "build" / ".extra-ca-bundle.crt").read_text() == ""

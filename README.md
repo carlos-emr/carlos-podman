@@ -1930,6 +1930,42 @@ unreachable, `build` refuses with exactly that guidance. One more edge: a
 pin taken between "release published" and "WAR uploaded" records a source
 build — `source update` re-resolves it.
 
+### Prebuilt images (`<APP>_ARTIFACT=image`)
+
+The third artifact, **opt-in only** (`auto` never selects it): instead of
+building locally, `carlos-ctl build` pulls the pinned release's **prebuilt
+multi-arch image** — published per app release to
+`ghcr.io/carlos-emr/carlos-app` / `ghcr.io/carlos-emr/carlos-drugref` by this
+repo's *Publish Images* workflow (see the supply-chain section) — **by
+digest**, and feeds it through the exact same `:build-<stamp>` →
+`:previous`/`:latest` promotion, smoke test, rollback, and pod machinery as
+a local build. The pod spec keeps deploying `localhost/carlos-app:latest`;
+nothing downstream changes.
+
+- **Trust model**: at pin time the resolver asks the registry for the tag's
+  manifest-list digest and records it in the pin; every pull is
+  `<repo>@sha256:<digest>` — the tag is for humans, the digest is the trust
+  anchor, exactly like the third-party `repo:tag@sha256:` pins. A pinned
+  image build is fully offline (no API, no registry lookup).
+- **Refuse, never substitute**: a release whose image was not published yet
+  refuses with guidance (dispatch *Publish Images*, or fall back with
+  `<APP>_ARTIFACT=auto/war/source`); a failed pull aborts before any tag
+  moves. An artifact class is never silently swapped for another.
+- **Verify before trusting** a digest you didn't just publish:
+  `gh attestation verify oci://ghcr.io/carlos-emr/carlos-app:<tag>-rN --owner carlos-emr`.
+- **Air-gap / mirror**: point `carlos_image_repo` /
+  `carlos_drugref_image_repo` at an internal mirror, or skip resolution
+  entirely with the manual channel — `<APP>_REF=<tag>`,
+  `<APP>_ARTIFACT=image`, `<APP>_IMAGE_DIGEST=<sha256:...>` (the digest is
+  printed by every *Publish Images* run summary).
+- **TLS-inspecting proxy**: pulls use podman's own trust —
+  `/etc/containers/certs.d/ghcr.io/ca.crt` (the `CARLOS_EXTRA_CA_BUNDLE`
+  build-stage hook deliberately does not apply; nothing compiles).
+- **Release gate**: under `CARLOS_BUILD_MODE=release` an image artifact
+  satisfies the gate by construction — the digest IS the content checksum —
+  so an all-image release build needs no `*_SRC_SHA256` and no
+  `SOURCE_DATE_EPOCH`.
+
 **Upgrade note (default flip):** installs provisioned before this feature
 rendered `CARLOS_REF=develop` and `DRUGREF_REF=master`, and any explicit
 value keeps exactly that behavior. But a host_vars file that never set
@@ -2996,6 +3032,11 @@ manually dispatched per app release):
 Local builds remain first-class and are the default: prebuilt images are an
 opt-in convenience for hosts that don't want to compile or download-and-bake
 per host, not a replacement for `carlos-ctl build`'s source/WAR modes.
+Consumption is `<APP>_ARTIFACT=image` (see
+[Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)):
+a third trust chain — attested WAR → attested multi-arch image →
+digest-pinned pull — alongside the compile-from-pinned-source and
+verified-WAR chains.
 (One-time setup note for maintainers: new ghcr packages default **private**
 — after the first publish, an org admin must set both packages public and
 confirm they're linked to this repo.)

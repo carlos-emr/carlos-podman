@@ -9,4 +9,4 @@ and PITR, monitoring, and the break-glass database verbs. The split is
 deliberate — see README "Design rationale".
 """
 
-__version__ = "2.0.0-beta1"
+__version__ = "2.0.0-beta2"
