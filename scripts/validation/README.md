@@ -22,7 +22,9 @@ which remain the CI gate.
   `carlos-emr/carlos` and `carlos-emr/drugref2026`. Asset download URLs are
   the real `github.com` URLs, so WAR downloads still travel the real
   network. A mode file toggles failure scenarios live (`norelease`,
-  `ratelimit-half`).
+  `ratelimit-half`, `dr-ratelimit-half` for a second-app failure after the
+  first resolved, and `deny` — every request 503s, a true "API
+  unavailable" for the offline assertions).
 - `ctl-validation.sh` — the checks (~44), covering: every `source` subverb
   against the mock, sticky-pin persistence and offline builds, pin-file
   corruption/implausibility warnings, the mutating-verb lock, full real

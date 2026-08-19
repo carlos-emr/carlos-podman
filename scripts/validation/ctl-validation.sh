@@ -41,7 +41,7 @@ if [ -z "${VAL_ALLOW_RUNNING:-}" ] && podman ps --format '{{.Names}}' | grep -q 
     echo "rebuilds the localhost image tags. Stop them or set VAL_ALLOW_RUNNING=1." >&2
     exit 2
 fi
-if ! curl -fsS --max-time 5 https://api.github.com/repos/carlos-emr/carlos/releases?per_page=1 >/dev/null 2>&1; then
+if ! curl -fsS --max-time 5 "https://api.github.com/repos/carlos-emr/carlos/releases?per_page=1" >/dev/null 2>&1; then
     echo "FATAL: mock api.github.com is not answering — run via run-validation.sh" >&2
     exit 2
 fi
@@ -49,7 +49,7 @@ fi
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf 'ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf 'FAIL %s\n' "$1"; }
-ctl() { EMR_HOME=$H python3 -m carlos_ctl.cli "$@"; }
+ctl() { EMR_HOME="$H" python3 -m carlos_ctl.cli "$@"; }
 # assert_run <desc> <expected-rc> <grep-pattern-in-combined-output> -- cmd...
 assert_run() {
   local d="$1" want_rc="$2" pat="$3"; shift 3; shift  # drop --
@@ -80,8 +80,13 @@ assert_run "source update resolves BOTH apps from releases" 0 "deploy with 'carl
 [ "$(pin .drugref tag)" = "v1.0.0rc2" ] && ok "drugref pin: stable release tag" || bad "drugref pin tag: $(pin .drugref tag)"
 [ "$(pin .drugref war_sha256)" = "$DRUGREF_WAR_SHA" ] && ok "drugref pin: real WAR sha256 (fixed-name asset)" || bad "drugref war sha"
 assert_run "source show prints both pins + offline note" 0 "no network" -- ctl source show
-assert_run "source show offline (API blocked) still works" 0 "2026.08.0-alpha1" -- \
-  env -u NO_PROXY -u no_proxy EMR_HOME=$H python3 -m carlos_ctl.cli source
+# True API unavailability: the mock 503s EVERY request in deny mode, so this
+# holds regardless of proxy configuration (merely unsetting proxy vars would
+# still reach the mock through /etc/hosts).
+echo deny > "$MOCK_MODE_FILE"
+assert_run "source show offline (API denied) still works" 0 "2026.08.0-alpha1" -- \
+  env -u NO_PROXY -u no_proxy EMR_HOME="$H" python3 -m carlos_ctl.cli source
+echo full > "$MOCK_MODE_FILE"
 assert_run "set <tag> --artifact source keeps WAR data" 0 "source compile" -- ctl source set 2026.08.0-alpha1 --artifact source
 [ "$(pin '' artifact)" = "source" ] && [ "$(pin '' war_sha256)" = "$CARLOS_WAR_SHA" ] \
   && ok "forced-source pin retained WAR url+sha (flip-back is offline)" || bad "war data lost on forced-source pin"
@@ -91,9 +96,9 @@ assert_run "set --drugref master pins branch HEAD sha" 0 "branch master HEAD" --
 assert_run "source update moves drugref back to its release" 0 "v1.0.0rc2" -- ctl source update
 assert_run "set unknown tag with --artifact war refuses" 1 "not a release tag" -- ctl source set no-such-tag-xyz --artifact war
 assert_run "set <sha> under ARTIFACT=war refuses at SET time" 1 "bare commit has no WAR" -- \
-  env ENV_FILE="$VAL_HOME/env-war-typo" EMR_HOME=$H python3 -m carlos_ctl.cli source set $CARLOS_SHA
+  env ENV_FILE="$VAL_HOME/env-war-typo" EMR_HOME="$H" python3 -m carlos_ctl.cli source set $CARLOS_SHA
 assert_run "unrecognized artifact enum fails LOUDLY" 1 "not a recognized artifact" -- \
-  env ENV_FILE="$VAL_HOME/env-enum-typo" EMR_HOME=$H python3 -m carlos_ctl.cli source update
+  env ENV_FILE="$VAL_HOME/env-enum-typo" EMR_HOME="$H" python3 -m carlos_ctl.cli source update
 assert_run "source usage error on bad subverb" 1 "usage: carlos-ctl source" -- ctl source frobnicate
 
 echo "=== Phase 1b: pin robustness ==="
@@ -111,30 +116,40 @@ assert_run "implausible pin (branch-name ref): warned + degraded" 0 "implausible
 cp "$VAL_HOME/good-pin.bak" "$H/build/.source-pin"
 
 echo "=== Phase 1c: mutating-verb lock ==="
+# The holder signals via a marker file once it actually owns the lock, so the
+# refusal check never races a slow interpreter start; killing the holder
+# afterwards avoids waiting out its full sleep.
+rm -f "$VAL_HOME/lock-held"
 python3 - <<PYEOF &
-import fcntl, time
-f=open('$H/.carlos-ctl.lock','a'); fcntl.flock(f, fcntl.LOCK_EX); time.sleep(8)
+import fcntl, pathlib, time
+f=open('$H/.carlos-ctl.lock','a'); fcntl.flock(f, fcntl.LOCK_EX)
+pathlib.Path('$VAL_HOME/lock-held').write_text('1')
+time.sleep(30)
 PYEOF
 LOCKPID=$!
-sleep 1
+for _ in {1..100}; do [ -e "$VAL_HOME/lock-held" ] && break; sleep 0.1; done
+[ -e "$VAL_HOME/lock-held" ] && ok "lock holder acquired the lock" || bad "lock holder never acquired the lock"
 assert_run "source update refuses while another mutating verb holds the lock" 1 "already running" -- ctl source update
-wait $LOCKPID
+kill "$LOCKPID" 2>/dev/null; wait "$LOCKPID" 2>/dev/null
 assert_run "lock released: update succeeds again" 0 "" -- ctl source update
 
 echo "=== Phase 2: REAL builds through carlos-ctl (live podman) ==="
 podman rmi -f localhost/carlos-app:latest localhost/carlos-drugref:latest \
   localhost/carlos-app:previous localhost/carlos-drugref:previous >/dev/null 2>&1
 assert_run "full 'carlos-ctl build' from the WAR pins (both apps, real assets)" 0 \
-  "Built :build-.* and :latest" -- env BUILD_STAMP=val-1 EMR_HOME=$H python3 -m carlos_ctl.cli build
+  "Built :build-.* and :latest" -- env BUILD_STAMP=val-1 EMR_HOME="$H" python3 -m carlos_ctl.cli build
 podman image exists localhost/carlos-app:latest && ok "carlos :latest promoted" || bad "carlos :latest missing"
 podman image exists localhost/carlos-drugref:latest && ok "drugref :latest promoted" || bad "drugref :latest missing"
 podman image exists localhost/carlos-app:build-val-1 && ok "immutable :build-val-1 tag exists" || bad ":build tag missing"
 grep -qx dev "$H/build/.build-mode" && ok ".build-mode records dev" || bad ".build-mode wrong"
-OUT=$(env BUILD_STAMP=val-1 EMR_HOME=$H python3 -m carlos_ctl.cli source 2>&1)
+OUT=$(env BUILD_STAMP=val-1 EMR_HOME="$H" python3 -m carlos_ctl.cli source 2>&1)
 grep -q "published WAR" <<<"$OUT" && ok "post-build source show agrees with what was built" || bad "post-build show"
 
-assert_run "second build (offline, --use-cache): sticky pins, no API" 0 "Built :build-.*" -- \
-  env -u NO_PROXY -u no_proxy BUILD_STAMP=val-2 EMR_HOME=$H python3 -m carlos_ctl.cli build --use-cache
+# deny mode: a pinned rebuild that touched the API would fail loudly here.
+echo deny > "$MOCK_MODE_FILE"
+assert_run "second build (API denied, --use-cache): sticky pins, no API" 0 "Built :build-.*" -- \
+  env -u NO_PROXY -u no_proxy BUILD_STAMP=val-2 EMR_HOME="$H" python3 -m carlos_ctl.cli build --use-cache
+echo full > "$MOCK_MODE_FILE"
 podman image exists localhost/carlos-app:previous && ok ":previous rollback target rotated in" || bad ":previous missing"
 assert_run "build usage error on unknown flag" 1 "usage: carlos-ctl build" -- ctl build --frobnicate
 
@@ -145,7 +160,7 @@ import json
 p='$H/build/.source-pin'; d=json.load(open(p)); d['war_sha256']='e'*64; json.dump(d, open(p,'w'))
 PYEOF
 assert_run "tampered WAR sha256: build FAILS (in-image sha256sum -c)" 1 "build failed for" -- \
-  env BUILD_STAMP=val-3 EMR_HOME=$H python3 -m carlos_ctl.cli build --use-cache
+  env BUILD_STAMP=val-3 EMR_HOME="$H" python3 -m carlos_ctl.cli build --use-cache
 NOW_LATEST=$(podman image inspect --format '{{.Id}}' localhost/carlos-app:latest)
 [ "$GOOD_LATEST" = "$NOW_LATEST" ] && ok ":latest untouched after failed build (no partial promote)" || bad ":latest moved on failure!"
 cp "$VAL_HOME/good-pin.bak" "$H/build/.source-pin"
@@ -154,12 +169,21 @@ echo "=== Phase 2c: mid-pair API failure leaves no half-pinned state ==="
 rm -f "$H/build/.source-pin" "$H/build/.source-pin.drugref"
 echo ratelimit-half > "$MOCK_MODE_FILE"
 assert_run "carlos /commits 403 mid-resolve: build refuses with guidance" 1 "source set" -- \
-  env EMR_HOME=$H python3 -m carlos_ctl.cli build
+  env EMR_HOME="$H" python3 -m carlos_ctl.cli build
 [ ! -e "$H/build/.source-pin" ] && [ ! -e "$H/build/.source-pin.drugref" ] \
-  && ok "no pin written on mid-pair failure (atomic pair resolve)" || bad "half-pinned state left behind"
+  && ok "no pin written on first-app failure" || bad "pin left behind on first-app failure"
+# The sharper drill: CARLOS resolves FIRST and fully succeeds, then DrugRef's
+# /commits 403s. A broken implementation that persisted CARLOS immediately
+# after resolving it would leave a half-pinned pair here.
+echo dr-ratelimit-half > "$MOCK_MODE_FILE"
+assert_run "drugref 403 AFTER carlos resolved: build refuses" 1 "" -- \
+  env EMR_HOME="$H" python3 -m carlos_ctl.cli build
+[ ! -e "$H/build/.source-pin" ] && [ ! -e "$H/build/.source-pin.drugref" ] \
+  && ok "carlos pin NOT persisted when the second app fails (atomic pair resolve)" \
+  || bad "half-pinned state left behind after second-app failure"
 echo full > "$MOCK_MODE_FILE"
 assert_run "recovery: next build resolves and pins cleanly" 0 "pinned CARLOS source" -- \
-  env BUILD_STAMP=val-4 EMR_HOME=$H python3 -m carlos_ctl.cli build --use-cache
+  env BUILD_STAMP=val-4 EMR_HOME="$H" python3 -m carlos_ctl.cli build --use-cache
 
 echo "=== Phase 2d: no-release fallback resolves main HEAD ==="
 rm -f "$H/build/.source-pin"
@@ -170,6 +194,13 @@ assert_run "no releases: falls back to branch main HEAD (source compile) and say
   && ok "branch fallback pinned main's commit sha" || bad "branch fallback pin wrong"
 echo full > "$MOCK_MODE_FILE"
 ctl source update >/dev/null 2>&1  # restore release pins for any later use
+
+# Untag the per-run :build-val-* image tags so repeat runs don't accumulate
+# them (the underlying layers stay shared with :latest / the build cache).
+podman images --format '{{.Repository}}:{{.Tag}}' | \
+  grep -E '^localhost/carlos-(app|drugref):build-val-' | \
+  xargs -r podman rmi >/dev/null 2>&1
+echo "== per-run :build-val-* tags removed"
 
 echo
 echo "=== RESULT: $PASS passed, $FAIL failed ==="

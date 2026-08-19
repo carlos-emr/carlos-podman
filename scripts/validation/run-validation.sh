@@ -71,25 +71,41 @@ DRUGREF_SOURCE_BRANCH=master
 EOF
 
 # ---- 2. throwaway CA + hosts redirect --------------------------------------
+# The CA becomes machine-trusted for the run's duration, so its private key
+# must not be readable by other local users (VAL_HOME may be operator-chosen
+# and world-readable).
 mkdir -p "$MOCK"
+chmod 700 "$MOCK"
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=carlos-validation-ca" \
     -keyout "$MOCK/ca.key" -out "$MOCK/ca.crt" 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=api.github.com" \
     -keyout "$MOCK/api.key" -out "$MOCK/api.csr" 2>/dev/null
+chmod 600 "$MOCK/ca.key" "$MOCK/api.key"
 printf 'subjectAltName=DNS:api.github.com\n' > "$MOCK/san.ext"
 openssl x509 -req -in "$MOCK/api.csr" -CA "$MOCK/ca.crt" -CAkey "$MOCK/ca.key" \
     -CAcreateserial -days 2 -extfile "$MOCK/san.ext" -out "$MOCK/api.crt" 2>/dev/null
 
+CA_ANCHOR_DEBIAN=/usr/local/share/ca-certificates/carlos-validation-ca.crt
+CA_ANCHOR_RHEL=/etc/pki/ca-trust/source/anchors/carlos-validation-ca.crt
 CA_INSTALLED=""
 install_ca() {
+    # Refuse to clobber a leftover anchor (crashed prior run, unrelated file):
+    # the operator should inspect and remove it explicitly.
+    if [ -e "$CA_ANCHOR_DEBIAN" ] || [ -e "$CA_ANCHOR_RHEL" ]; then
+        echo "FATAL: a carlos-validation-ca.crt anchor already exists in the trust store —" >&2
+        echo "       inspect and remove it before running (previous run crashed?)" >&2
+        exit 2
+    fi
+    # Record the install BEFORE the refresh runs: if the refresh fails under
+    # set -e, teardown must still remove the copied anchor.
     if [ -d /usr/local/share/ca-certificates ] && command -v update-ca-certificates >/dev/null; then
-        cp "$MOCK/ca.crt" /usr/local/share/ca-certificates/carlos-validation-ca.crt
-        update-ca-certificates >/dev/null
+        cp "$MOCK/ca.crt" "$CA_ANCHOR_DEBIAN"
         CA_INSTALLED=debian
+        update-ca-certificates >/dev/null
     elif [ -d /etc/pki/ca-trust/source/anchors ] && command -v update-ca-trust >/dev/null; then
-        cp "$MOCK/ca.crt" /etc/pki/ca-trust/source/anchors/carlos-validation-ca.crt
-        update-ca-trust
+        cp "$MOCK/ca.crt" "$CA_ANCHOR_RHEL"
         CA_INSTALLED=rhel
+        update-ca-trust
     else
         echo "FATAL: no known system trust store (update-ca-certificates / update-ca-trust)" >&2
         exit 2
@@ -105,16 +121,22 @@ teardown() {
         sed -i '/^127\.0\.0\.1 api\.github\.com # carlos-validation$/d' /etc/hosts
     fi
     case "$CA_INSTALLED" in
-        debian) rm -f /usr/local/share/ca-certificates/carlos-validation-ca.crt
+        debian) rm -f "$CA_ANCHOR_DEBIAN"
                 update-ca-certificates >/dev/null 2>&1 ;;
-        rhel)   rm -f /etc/pki/ca-trust/source/anchors/carlos-validation-ca.crt
+        rhel)   rm -f "$CA_ANCHOR_RHEL"
                 update-ca-trust 2>/dev/null ;;
     esac
     echo "== teardown complete (scratch home kept at $VAL_HOME)"
 }
 trap teardown EXIT
+# An untrapped signal would terminate bash WITHOUT running the EXIT trap,
+# stranding the hosts redirect and the trusted CA. Convert common
+# termination signals into a normal exit so teardown always runs.
+trap 'exit 129' HUP INT TERM
 
-if grep -qE '^[0-9.]+ +api\.github\.com' /etc/hosts; then
+# /etc/hosts allows tab separators and the name as a later alias — match any
+# whitespace and any position, not just "IP<space>api.github.com".
+if grep -qE '^[^#]*[[:space:]]api\.github\.com([[:space:]]|$)' /etc/hosts; then
     echo "FATAL: /etc/hosts already redirects api.github.com — refusing to stack" >&2
     exit 2
 fi
@@ -127,13 +149,19 @@ echo full > "$MOCK/mode"
 MOCK_MODE_FILE="$MOCK/mode" MOCK_CERT="$MOCK/api.crt" MOCK_KEY="$MOCK/api.key" \
     python3 "$HERE/mock-github-api.py" > "$MOCK/server.log" 2>&1 &
 MOCK_PID=$!
-for _ in $(seq 20); do
-    NO_PROXY=api.github.com no_proxy=api.github.com \
+MOCK_READY=""
+for _ in {1..20}; do
+    if NO_PROXY=api.github.com no_proxy=api.github.com \
         curl -fsS --max-time 3 "https://api.github.com/repos/carlos-emr/carlos/releases?per_page=1" \
-        >/dev/null 2>&1 && break
+        >/dev/null 2>&1; then MOCK_READY=1; break; fi
     kill -0 "$MOCK_PID" 2>/dev/null || { echo "FATAL: mock server died:" >&2; cat "$MOCK/server.log" >&2; exit 2; }
     sleep 0.5
 done
+if [ -z "$MOCK_READY" ]; then
+    echo "FATAL: mock server did not answer in time:" >&2
+    cat "$MOCK/server.log" >&2
+    exit 2
+fi
 echo "== mock api.github.com is up (pid $MOCK_PID)"
 
 # ---- 4. the harness --------------------------------------------------------

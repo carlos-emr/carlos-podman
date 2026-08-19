@@ -17,10 +17,15 @@ the suite stays deterministic even after the live repos move on.
 
 Serving mode is read per request from the file named by MOCK_MODE_FILE
 (default: ./mode next to this script), so tests can toggle it live:
-  full            (default) snapshot data for both repos
-  norelease       carlos answers []; drugref keeps its snapshot
-  ratelimit-half  carlos /releases OK, carlos /commits 403s
-                  (drives the mid-pair resolution failure path)
+  full               (default) snapshot data for both repos
+  norelease          carlos answers []; drugref keeps its snapshot
+  ratelimit-half     carlos /releases OK, carlos /commits 403s
+                     (fails the FIRST app of the resolve pair)
+  dr-ratelimit-half  carlos fully OK, drugref /commits 403s
+                     (fails the SECOND app after the first resolved —
+                     the half-pinned-state drill)
+  deny               every request answers 503 — a true "API unavailable"
+                     for offline assertions, regardless of proxy setup
 
 Certificate/key paths come from MOCK_CERT / MOCK_KEY (default: api.crt /
 api.key next to this script). Listens on 127.0.0.1:443 (needs root).
@@ -93,6 +98,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         mode = MODE_FILE.read_text().strip() if MODE_FILE.is_file() else "full"
         p = self.path
+        if mode == "deny":
+            return self._json({"message": "Service Unavailable"}, 503)
         if p.startswith("/repos/carlos-emr/carlos/releases"):
             if mode == "norelease":
                 return self._json([])
@@ -104,12 +111,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if p.startswith("/repos/carlos-emr/drugref2026/releases"):
             return self._json(DRUGREF_RELEASES)
         if p.startswith("/repos/carlos-emr/drugref2026/commits/"):
+            if mode == "dr-ratelimit-half":
+                return self._json({"message": "API rate limit exceeded"}, 403)
             return self._json({"sha": DRUGREF_SHA})
         return self._json({"message": "Not Found"}, 404)
 
 
 def main():
-    httpd = http.server.HTTPServer(("127.0.0.1", 443), Handler)
+    # Threading + daemon threads: a stalled TLS handshake from one client
+    # (e.g. a timed-out readiness probe) must not block later requests.
+    http.server.ThreadingHTTPServer.daemon_threads = True
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 443), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(CERT, KEY)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
