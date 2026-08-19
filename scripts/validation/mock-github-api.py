@@ -4,7 +4,8 @@
 """Local HTTPS mock of the two GitHub API endpoint families carlos-ctl's
 source resolver uses (/releases and /commits/<ref>), serving a FROZEN
 snapshot of real release data for carlos-emr/carlos and
-carlos-emr/drugref2026 (as returned by the live API on 2026-08-18/19).
+carlos-emr/drugref2026 (as returned by the live API on 2026-08-19,
+after the 2026.08.0-alpha2 release).
 
 Run by scripts/validation/run-validation.sh, which binds api.github.com to
 127.0.0.1 via /etc/hosts and installs a throwaway CA so the CLI's real curl
@@ -44,29 +45,55 @@ KEY = Path(os.environ.get("MOCK_KEY", HERE / "api.key"))
 
 # Frozen live-repo facts. If you refresh these, refresh the matching
 # constants at the top of ctl-validation.sh in the same commit.
-CARLOS_SHA = "74b4c0c67881ebc9879357dc68299a056d64efa9"
+# (The mock answers every /commits/<ref> with the one release commit, so
+# CARLOS_SHA is the sha of the NEWEST release in the list below.)
+CARLOS_SHA = "6d4117daf97c9a7eb5f4c67921aa907bcf2dc5dc"
 DRUGREF_SHA = "101063bbd13d3c767cc3c3daf5f64ac673d8d327"
 
-CARLOS_RELEASES = [{
-    "tag_name": "2026.08.0-alpha1",
-    "name": "CARLOS EMR 2026.08.0-alpha1",
-    "prerelease": True,
-    "draft": False,
-    "published_at": "2026-08-18T19:22:53Z",
-    "assets": [
-        {
-            "name": "carlos-2026.08.0-alpha1.war",
-            "browser_download_url": "https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha1/carlos-2026.08.0-alpha1.war",
-            "digest": "sha256:3815d94e081d5587dc218443956c5d121b21c9fd40b47b8ccae080af69fb4129",
-            "size": 322820102,
-        },
-        {
-            "name": "carlos-2026.08.0-alpha1.war.sha256",
-            "browser_download_url": "https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha1/carlos-2026.08.0-alpha1.war.sha256",
-            "size": 94,
-        },
-    ],
-}]
+# Two prereleases, both real: the resolver must pick alpha2 as the newest
+# by published_at, which this pair also exercises.
+CARLOS_RELEASES = [
+    {
+        "tag_name": "2026.08.0-alpha2",
+        "name": "2026.08.0-alpha2",
+        "prerelease": True,
+        "draft": False,
+        "published_at": "2026-08-19T03:21:31Z",
+        "assets": [
+            {
+                "name": "carlos-2026.08.0-alpha2.war",
+                "browser_download_url": "https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha2/carlos-2026.08.0-alpha2.war",
+                "digest": "sha256:7f42d44061e1629b022e3ef9d69d8f4a96db23ec15dd252dc94baa15abfe19cc",
+                "size": 322821147,
+            },
+            {
+                "name": "carlos-2026.08.0-alpha2.war.sha256",
+                "browser_download_url": "https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha2/carlos-2026.08.0-alpha2.war.sha256",
+                "size": 94,
+            },
+        ],
+    },
+    {
+        "tag_name": "2026.08.0-alpha1",
+        "name": "CARLOS EMR 2026.08.0-alpha1",
+        "prerelease": True,
+        "draft": False,
+        "published_at": "2026-08-18T19:22:53Z",
+        "assets": [
+            {
+                "name": "carlos-2026.08.0-alpha1.war",
+                "browser_download_url": "https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha1/carlos-2026.08.0-alpha1.war",
+                "digest": "sha256:3815d94e081d5587dc218443956c5d121b21c9fd40b47b8ccae080af69fb4129",
+                "size": 322820102,
+            },
+            {
+                "name": "carlos-2026.08.0-alpha1.war.sha256",
+                "browser_download_url": "https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha1/carlos-2026.08.0-alpha1.war.sha256",
+                "size": 94,
+            },
+        ],
+    },
+]
 
 DRUGREF_RELEASES = [{
     "tag_name": "v1.0.0rc2",

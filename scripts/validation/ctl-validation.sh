@@ -29,9 +29,9 @@ export NO_PROXY=api.github.com no_proxy=api.github.com
 
 # Frozen live-repo facts served by mock-github-api.py. If you refresh the
 # snapshot there, refresh these in the same commit.
-CARLOS_SHA=74b4c0c67881ebc9879357dc68299a056d64efa9
+CARLOS_SHA=6d4117daf97c9a7eb5f4c67921aa907bcf2dc5dc
 DRUGREF_SHA=101063bbd13d3c767cc3c3daf5f64ac673d8d327
-CARLOS_WAR_SHA=3815d94e081d5587dc218443956c5d121b21c9fd40b47b8ccae080af69fb4129
+CARLOS_WAR_SHA=7f42d44061e1629b022e3ef9d69d8f4a96db23ec15dd252dc94baa15abfe19cc
 DRUGREF_WAR_SHA=5b367e65f5c0c0262ea36a4662d9040818754bea307ffb70a0c81931a0aaf6fc
 
 # Phase 2 removes and rebuilds localhost/carlos-app + carlos-drugref image
@@ -73,7 +73,7 @@ assert_run "version prints rc 0" 0 "carlos-ctl " -- ctl version
 assert_run "unknown verb refuses loudly" 1 "unknown command" -- ctl frobnicate
 assert_run "bare source: no pins yet, says what next build does" 0 "no source pin recorded" -- ctl source
 assert_run "source update resolves BOTH apps from releases" 0 "deploy with 'carlos-ctl rebuild'" -- ctl source update
-[ "$(pin '' tag)" = "2026.08.0-alpha1" ] && ok "carlos pin: prerelease tag (mock snapshot of live repo)" || bad "carlos pin tag: $(pin '' tag)"
+[ "$(pin '' tag)" = "2026.08.0-alpha2" ] && ok "carlos pin: prerelease tag (mock snapshot of live repo)" || bad "carlos pin tag: $(pin '' tag)"
 [ "$(pin '' commit)" = "$CARLOS_SHA" ] && ok "carlos pin: real release commit" || bad "carlos pin commit"
 [ "$(pin '' war_sha256)" = "$CARLOS_WAR_SHA" ] && ok "carlos pin: real published WAR sha256" || bad "carlos pin war sha"
 [ "$(pin '' artifact)" = "war" ] && ok "carlos pin: WAR artifact auto-selected" || bad "carlos artifact"
@@ -85,13 +85,13 @@ assert_run "source show prints both pins + offline note" 0 "no network" -- ctl s
 # 503 even in proxied environments (unsetting it would send the request to
 # the proxy instead and test the wrong failure).
 echo deny > "$MOCK_MODE_FILE"
-assert_run "source show offline (API denied) still works" 0 "2026.08.0-alpha1" -- \
+assert_run "source show offline (API denied) still works" 0 "2026.08.0-alpha2" -- \
   env EMR_HOME="$H" python3 -m carlos_ctl.cli source
 echo full > "$MOCK_MODE_FILE"
-assert_run "set <tag> --artifact source keeps WAR data" 0 "source compile" -- ctl source set 2026.08.0-alpha1 --artifact source
+assert_run "set <tag> --artifact source keeps WAR data" 0 "source compile" -- ctl source set 2026.08.0-alpha2 --artifact source
 [ "$(pin '' artifact)" = "source" ] && [ "$(pin '' war_sha256)" = "$CARLOS_WAR_SHA" ] \
   && ok "forced-source pin retained WAR url+sha (flip-back is offline)" || bad "war data lost on forced-source pin"
-assert_run "set <tag> flips back to WAR without extra state" 0 "published WAR" -- ctl source set 2026.08.0-alpha1
+assert_run "set <tag> flips back to WAR without extra state" 0 "published WAR" -- ctl source set 2026.08.0-alpha2
 assert_run "set --drugref master pins branch HEAD sha" 0 "branch master HEAD" -- ctl source set --drugref master
 [ "$(pin .drugref ref)" = "$DRUGREF_SHA" ] && ok "drugref branch pin carries the commit sha" || bad "drugref branch pin sha"
 assert_run "source update moves drugref back to its release" 0 "v1.0.0rc2" -- ctl source update
