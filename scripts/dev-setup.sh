@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
 #
-# scripts/dev-setup.sh — automate QUICKSTART.md steps 2 and 3.
+# scripts/dev-setup.sh — automate QUICKSTART.md step 3 (the dev configuration).
 #
 # Lays out the DEVELOPMENT/TEST instance directory tree, copies the verbatim
 # conf files, renders carlos.properties from the role template, and renders
@@ -19,7 +19,7 @@
 #   --emr-home DIR      instance home (default: $EMR_HOME, else $HOME/emr)
 #   --province ON|BC    billing province rendered into carlos.properties
 #                       (default ON; BC also means: load the bc/ migrations
-#                       in QUICKSTART step 4)
+#                       in QUICKSTART step 5)
 #   --server-name NAME  server_name rendered into carlos.properties
 #                       (default localhost)
 #   --force             overwrite an existing rendered carlos.properties /
@@ -115,7 +115,7 @@ case "$DB_PW" in
         echo "       (boot-fatal for the CARLOS webapp). Choose another password." >&2
         exit 1 ;;
 esac
-# --- 1. directory layout (QUICKSTART step 2) ---------------------------------------
+# --- 1. directory layout (QUICKSTART step 3) ---------------------------------------
 mkdir -p "$EMR_HOME/container/conf/tomcat" \
          "$EMR_HOME/container/conf/carlos" \
          "$EMR_HOME/container/conf/mariadb" \
@@ -246,23 +246,33 @@ echo "==> Dev pod spec rendered to $POD_YAML (mode 600)"
 
 cat <<EOF
 
-Setup complete. Next (QUICKSTART.md steps 1, 3-5):
+Setup complete. Next (QUICKSTART.md steps 2 and 4-6):
 
-  1. build the image (if not done):
-       CARLOS_SHA=\$(git ls-remote https://github.com/carlos-emr/carlos develop | cut -f1)
+  1. build the image (if not done) — QUICKSTART step 2 has both paths.
+     Preferred: a published release WAR (fast, sha256-verified):
+       CARLOS_TAG='<newest tag from api.github.com/repos/carlos-emr/carlos/releases>'
+       WAR_URL=https://github.com/carlos-emr/carlos/releases/download/\$CARLOS_TAG/carlos-\$CARLOS_TAG.war
+       WAR_SHA=\$(curl -sL "\$WAR_URL.sha256" | cut -d' ' -f1)
+       podman build --no-cache --ulimit nofile=65536:65536 \\
+         --build-arg CARLOS_WAR_STAGE=download \\
+         --build-arg CARLOS_WAR_URL=\$WAR_URL --build-arg CARLOS_WAR_SHA256=\$WAR_SHA \\
+         -t localhost/carlos-app:latest -f Containerfile .
+     No release / compiling from source instead (main = the stable branch;
+     use develop deliberately for the development branch):
+       CARLOS_SHA=\$(git ls-remote https://github.com/carlos-emr/carlos main | cut -f1)
        podman build --no-cache --ulimit nofile=65536:65536 \\
          --build-arg CARLOS_REF=\$CARLOS_SHA \\
          -t localhost/carlos-app:latest -f Containerfile .
   2. deploy:      podman kube play $POD_YAML
-  3. load the Flyway schema (fresh install, once) — QUICKSTART step 4
+  3. load the Flyway schema (fresh install, once) — QUICKSTART step 5
      ($([ "$PROVINCE" = BC ] && echo "you rendered BC — use the bc/ migrations" || echo "ON migrations as shown"))
   4. log in at https://127.0.0.1:8443/ and complete the forced password
-     reset for the seeded dev account IMMEDIATELY (see QUICKSTART step 5)
+     reset for the seeded dev account IMMEDIATELY (see QUICKSTART step 6)
   5. (optional) for the app repo's Playwright suite, give the host mysql
      client a path to the pod's DB socket (needs root; skip if a host
      MariaDB owns the path — use 'podman exec' instead):
        sudo mkdir -p /var/run/mysqld
        sudo ln -sf $EMR_HOME/run/db-socket/mysqld.sock /var/run/mysqld/mysqld.sock
-     then run it with MYSQL_HOST=localhost (see QUICKSTART step 5's
+     then run it with MYSQL_HOST=localhost (see QUICKSTART step 6's
      Playwright notes)
 EOF

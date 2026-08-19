@@ -18,6 +18,15 @@
 #   STUB_STORE_AUTH=1  the stores ENFORCE basic auth: a store URL whose -K
 #                      config carries no `user =` line is rejected (exit 22)
 #                      — drives check's auth-enforcement probe both ways
+#   STUB_GH_DOWN=1     api.github.com becomes unreachable (exit 7) — drives
+#                      carlos_ctl.source's offline branches (pinned builds
+#                      must not care; unpinned resolution must refuse)
+#   STUB_GH_RELEASES=full|prerelease-only|none  what the carlos release list
+#                      answers (default full: one non-prerelease with a WAR
+#                      asset + sha256 digest — the release-first happy path)
+#   STUB_GH_DR_RELEASES=full|none  what the drugref2026 release list answers
+#                      (default full: one non-prerelease with the fixed-name
+#                      drugref2.war asset + digest, modelling live v1.0.0rc2)
 echo "curl $*" >> "${STUBLOG:-/dev/null}"
 
 # When the caller passes the URL off-argv via `-K -` (config on stdin), real
@@ -41,6 +50,49 @@ if [[ -n "${STUB_STORE_AUTH:-}" ]]; then
         *:8428/*|*:9428/*|*:8880/*)
             if [[ "$cfg" != *'user = "'* ]]; then exit 22; fi;;
     esac
+fi
+
+# GitHub API (carlos_ctl.source): deterministic release/commit answers so the
+# release-first resolution is testable end to end — for BOTH app repos. The
+# commit and WAR sha256 values are fixed test constants the suite's
+# assertions grep for (carlos commit 1111…, drugref commit 3333…).
+GH_SHA="1111111111111111111111111111111111111111"
+GH_WAR_SHA="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+GH_DR_SHA="3333333333333333333333333333333333333333"
+GH_DR_WAR_SHA="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+if [[ "$url" == https://api.github.com/repos/carlos-emr/carlos/* ]]; then
+    [[ -n "${STUB_GH_DOWN:-}" ]] && exit 7
+    case "$url" in
+        */releases?*)
+            case "${STUB_GH_RELEASES:-full}" in
+                none) echo '[]';;
+                prerelease-only)
+                    printf '[{"tag_name":"2026.08.0-alpha1","prerelease":true,"draft":false,"published_at":"2026-08-18T19:22:53Z","assets":[{"name":"carlos-2026.08.0-alpha1.war","browser_download_url":"https://github.com/carlos-emr/carlos/releases/download/2026.08.0-alpha1/carlos-2026.08.0-alpha1.war","digest":"sha256:%s"}]}]\n' "$GH_WAR_SHA";;
+                *)
+                    printf '[{"tag_name":"2026.08.0","prerelease":false,"draft":false,"published_at":"2026-08-18T19:22:53Z","assets":[{"name":"carlos-2026.08.0.war","browser_download_url":"https://github.com/carlos-emr/carlos/releases/download/2026.08.0/carlos-2026.08.0.war","digest":"sha256:%s"}]}]\n' "$GH_WAR_SHA";;
+            esac
+            exit 0;;
+        */commits/*)
+            printf '{"sha":"%s"}\n' "$GH_SHA"
+            exit 0;;
+    esac
+    exit 22
+fi
+if [[ "$url" == https://api.github.com/repos/carlos-emr/drugref2026/* ]]; then
+    [[ -n "${STUB_GH_DOWN:-}" ]] && exit 7
+    case "$url" in
+        */releases?*)
+            case "${STUB_GH_DR_RELEASES:-full}" in
+                none) echo '[]';;
+                *)
+                    printf '[{"tag_name":"v1.0.0rc2","prerelease":false,"draft":false,"published_at":"2026-03-21T22:27:21Z","assets":[{"name":"drugref2.war","browser_download_url":"https://github.com/carlos-emr/drugref2026/releases/download/v1.0.0rc2/drugref2.war","digest":"sha256:%s"}]}]\n' "$GH_DR_WAR_SHA";;
+            esac
+            exit 0;;
+        */commits/*)
+            printf '{"sha":"%s"}\n' "$GH_DR_SHA"
+            exit 0;;
+    esac
+    exit 22
 fi
 
 case "$url" in

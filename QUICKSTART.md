@@ -21,7 +21,7 @@ container workflow before configuring a standard environment.
 
 - **Sample-data evaluation:** continue with steps 1–6. This path uses the
   upstream seeded account and a loopback-only endpoint.
-- **Standard ON or BC environment:** review the host concepts in steps 1–2,
+- **Standard ON or BC environment:** review the host concepts in step 1,
   then continue at [Standard Ontario or British Columbia deployment](#standard-ontario-or-british-columbia-deployment).
 
 The sample-data instructions assume that you:
@@ -118,19 +118,58 @@ session before continuing.
 the packaged device rule normally configures this automatically. Fix the host
 udev or device permissions if the check prints nothing.
 
-## 2. Get the source and build the image
+## 2. Build the application image
 
 Clone this repository if you have not already done so:
 
 ```bash
-git clone https://github.com/yingbull/carlos-podman.git
+git clone https://github.com/carlos-emr/carlos-podman.git
 cd carlos-podman
 ```
 
-Resolve the current CARLOS `develop` commit and build that exact revision:
+CARLOS publishes GitHub releases, and a release usually ships a prebuilt
+`carlos-<tag>.war` — using it skips the long Maven compile. List the releases
+and pick the newest one (the full Ansible deployment automates exactly this
+policy; see the README's "Choosing the CARLOS and DrugRef versions"):
 
 ```bash
-CARLOS_SHA=$(git ls-remote https://github.com/carlos-emr/carlos.git develop | cut -f1)
+curl -s https://api.github.com/repos/carlos-emr/carlos/releases \
+  | grep -E '"(tag_name|prerelease)"'
+```
+
+**Path A — a release publishes a WAR (preferred).** Record its tag, source
+commit, and the WAR's sha256 (from the sibling `.war.sha256` asset), then
+build with the download stage:
+
+```bash
+CARLOS_TAG=2026.08.0-alpha1     # the newest release tag you picked
+CARLOS_SHA=$(curl -s "https://api.github.com/repos/carlos-emr/carlos/commits/$CARLOS_TAG" \
+  | grep -m1 '"sha"' | cut -d'"' -f4)
+WAR_URL="https://github.com/carlos-emr/carlos/releases/download/$CARLOS_TAG/carlos-$CARLOS_TAG.war"
+WAR_SHA=$(curl -sL "$WAR_URL.sha256" | cut -d' ' -f1)
+test -n "$CARLOS_SHA" && test -n "$WAR_SHA"
+printf 'Building CARLOS release %s (commit %s)\n' "$CARLOS_TAG" "$CARLOS_SHA"
+
+podman build --no-cache --ulimit nofile=65536:65536 \
+  --build-arg CARLOS_WAR_STAGE=download \
+  --build-arg CARLOS_WAR_URL="$WAR_URL" \
+  --build-arg CARLOS_WAR_SHA256="$WAR_SHA" \
+  --tag localhost/carlos-app:latest \
+  --file Containerfile .
+```
+
+The WAR is verified against its sha256 inside the build; a mismatch fails the
+build.
+
+**Path B — compile from source.** Use this when no release exists (build the
+`main` branch HEAD — the stable branch `develop` is promoted into for
+release — as shown) or
+when you want to compile a release's own source (set `CARLOS_SHA` to the
+release's source commit instead). Substitute `develop` for `main` if you
+deliberately want the development branch:
+
+```bash
+CARLOS_SHA=$(git ls-remote https://github.com/carlos-emr/carlos.git main | cut -f1)
 test -n "$CARLOS_SHA"
 printf 'Building CARLOS commit %s\n' "$CARLOS_SHA"
 
@@ -140,9 +179,10 @@ podman build --no-cache --ulimit nofile=65536:65536 \
   --file Containerfile .
 ```
 
-The first build downloads the application source, base images, and Maven
-dependencies. It can take several minutes. Keep the terminal open until Podman
-prints the image ID.
+The first source build downloads the application source, base images, and
+Maven dependencies. It can take considerably longer than the WAR path (twenty
+minutes is normal). Either way, keep the terminal open until Podman prints the
+image ID.
 
 Confirm that the image exists:
 
@@ -241,7 +281,10 @@ git clone https://github.com/carlos-emr/carlos.git carlos
 cd carlos-podman
 ```
 
-For reproducible results, check out the same commit used for the image build:
+For reproducible results, check out the same commit used for the image build
+(`$CARLOS_SHA` from step 2 — for a WAR-path build that is the release's
+source commit; under the full Ansible deployment `carlos-ctl source` prints
+the pinned tag and commit):
 
 ```bash
 cd ../carlos
@@ -386,7 +429,7 @@ ansible-galaxy collection install ansible.utils
 Clone the repository and create a working inventory:
 
 ```bash
-git clone https://github.com/yingbull/carlos-podman.git
+git clone https://github.com/carlos-emr/carlos-podman.git
 cd carlos-podman
 cp ansible/inventory.example ansible/inventory
 ```
@@ -451,6 +494,14 @@ below use the default `$EMR_HOME`:
 sudo EMR_HOME=/usr/local/emr carlos-ctl build
 sudo EMR_HOME=/usr/local/emr carlos-ctl play
 ```
+
+The first `build` resolves the newest CARLOS **and** DrugRef GitHub releases
+(preferring each release's published, sha256-verified WAR over a source
+compile), prints what it chose, and pins both — later builds stay on those
+pins until `carlos-ctl source update`. `carlos-ctl source` shows the pins;
+the README's "Choosing the CARLOS and DrugRef versions" section covers
+manual pinning (including tracking a development branch deliberately) and
+air-gapped hosts.
 
 On a new database, the first `play` is expected to return nonzero after starting
 the database because the CARLOS and DrugRef schemas do not exist yet. This

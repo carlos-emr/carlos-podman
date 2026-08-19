@@ -1115,11 +1115,16 @@ def _check_build_posture(m: MonitorRun) -> None:
     except OSError:
         return
     if dev_built:
+        # Wording matches lifecycle2's play warning: dev-mode means "not
+        # release-gated", not necessarily "no checksum" — the auto default may
+        # deploy a sha256-verified release WAR, but only the release gate pins
+        # every source (incl. the DrugRef compile) and the dependency lock.
         m.alert(
-            "the deployed images were DEV-MODE built (moving source ref, no source "
-            "checksum) — rebuild with CARLOS_BUILD_MODE=release (pinned 40-hex refs + "
-            "tarball SHA256s) for an audited production image, or set "
-            "CARLOS_ACCEPT_UNPINNED_BUILD=1 to accept the posture",
+            "the deployed images were NOT built under CARLOS_BUILD_MODE=release — "
+            "rebuild with it for an audited production image (per app: a "
+            "source-compiled app needs its 40-hex ref + *_SRC_SHA256; a WAR-artifact "
+            "app needs its pinned WAR sha256), or set CARLOS_ACCEPT_UNPINNED_BUILD=1 "
+            "to accept the posture",
             "build-unpinned",
         )
 

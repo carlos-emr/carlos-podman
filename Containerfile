@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-# CARLOS EMR application image: builds the WAR from source and packages it on
-# Tomcat 11 / JDK 21 (the stack the carlos-emr/carlos devcontainer targets).
+# CARLOS EMR application image: builds the WAR from source — or, in WAR mode
+# (CARLOS_WAR_STAGE=download, see below), downloads a published release WAR —
+# and packages it on Tomcat 11 / JDK 21 (the stack the carlos-emr/carlos
+# devcontainer targets).
 #
 #   podman build --no-cache -t localhost/carlos-app:latest -f Containerfile .
 #   (--no-cache matters: see REPRODUCIBILITY below — a cached ADD ships stale code)
 #   podman build --build-arg CARLOS_REF=<branch-or-tag-or-SHA> ...
 #
-# REPRODUCIBILITY: the default `develop` is a moving branch — two clean builds
+# REPRODUCIBILITY: the default `main` (the stable branch `develop` is
+# promoted into for release; pass CARLOS_REF=develop deliberately for the
+# development branch) is still a moving branch — two clean builds
 # weeks apart produce different images. For releases, pin a COMMIT SHA
 # (--build-arg CARLOS_REF=<40-char-sha>; GitHub serves archive/<sha>.tar.gz and
 # --strip-components=1 already handles the carlos-<sha>/ top dir). Because
@@ -18,7 +22,19 @@
 # tag can never change what a PHI image is built from — to bump, pick the new
 # tag and re-resolve its multi-arch digest (skopeo inspect --format
 # '{{.Digest}}' docker://<repo>:<tag>). Digests resolved 2026-07.
-ARG CARLOS_REF=develop
+ARG CARLOS_REF=main
+# WAR-artifact mode: when a GitHub release publishes a prebuilt WAR
+# (carlos-<tag>.war), `carlos-ctl build` selects the `download` stage below
+# instead of the Maven compile by passing CARLOS_WAR_STAGE=download plus the
+# asset URL and its MANDATORY sha256. The defaults keep the historical
+# compile-from-source behavior for every existing `podman build` invocation.
+# Both engines skip stages the final stage does not reference (BuildKit
+# always; buildah — podman's builder — since 1.24, well below this project's
+# podman 4.9 floor), so a source build never fetches the WAR and a WAR build
+# never pulls the Maven image or compiles.
+ARG CARLOS_WAR_URL=""
+ARG CARLOS_WAR_SHA256=""
+ARG CARLOS_WAR_STAGE=build
 # Reproducibility helpers (cosmetic): a fixed TZ keeps timestamp-sensitive
 # build steps deterministic, and SOURCE_DATE_EPOCH is honored by tools that
 # support it. Pass --build-arg SOURCE_DATE_EPOCH=<unix-ts> for a reproducible
@@ -80,6 +96,7 @@ ADD https://github.com/carlos-emr/carlos/archive/${CARLOS_REF}.tar.gz /tmp/carlo
 RUN if [ -n "$CARLOS_SRC_SHA256" ]; then echo "$CARLOS_SRC_SHA256  /tmp/carlos-src.tar.gz" | sha256sum -c -; fi \
     && mkdir /src && tar -xzf /tmp/carlos-src.tar.gz -C /src --strip-components=1
 WORKDIR /src
+# (Compile mode only — the `download` stage below ships upstream's WAR as-is.)
 # Tarball builds have no .git, but the app pom's buildnumber-maven-plugin
 # (validate phase) runs `git log` with no revisionOnScmFailure fallback and
 # hard-fails without one. Synthesize minimal git metadata; the real source
@@ -88,7 +105,10 @@ WORKDIR /src
 RUN git init -q -b develop . \
     && git -c user.email=build@carlos-podman.invalid -c user.name="carlos-podman build" \
        commit -q --allow-empty -m "carlos-podman tarball build of carlos-emr/carlos@${CARLOS_REF}"
-# Build identity for the app's own buildVersion string. The app pom's
+# Build identity for the app's own buildVersion string (compile mode only —
+# a downloaded release WAR carries upstream CI's buildVersion, so a WAR-mode
+# deploy shows the RELEASE's identity on the login page, not a local stamp).
+# The app pom's
 # antrun step does `<property environment="env"/>` and then rewrites
 # carlos.properties with `${env.JOB_NAME}` / `${env.BUILD_NUMBER}` — Jenkins
 # variables. Ant leaves an UNSET property as its literal `${env.JOB_NAME}`
@@ -127,6 +147,26 @@ RUN --mount=type=cache,target=/root/.m2 \
     && mvn -B -DskipTests=true -Dcheckstyle.skip=true -Dmaven.compiler.fork=true $LOCK_PROFILE package \
     && cp target/carlos-*.war /carlos.war
 
+# WAR download stage: the published release asset instead of the compile.
+# Based on the SAME digest-pinned tomcat image as the runtime stage — no new
+# pinned lineage to maintain, and a WAR build touches no other base image.
+# `ADD <url>` is fetched by the BUILDER process on the host (host trust
+# store), not inside this stage — so unlike the build stage's Maven fetch it
+# needs no extra-CA import behind a TLS-inspecting proxy. The sha256 check is
+# MANDATORY: a URL-fetched WAR is only trustworthy content-addressed
+# (`carlos-ctl build` passes the sha from the pinned release; a manual build
+# must pass CARLOS_WAR_SHA256 explicitly or this stage fails).
+FROM docker.io/library/tomcat:11.0-jdk21-temurin@sha256:f29ace5eff7f2787a8ecc0ec79d61423e6129bcc8ee31eda9a8caa945796fb37 AS download
+ARG CARLOS_WAR_URL
+ARG CARLOS_WAR_SHA256
+ADD ${CARLOS_WAR_URL} /carlos.war
+RUN test -n "$CARLOS_WAR_SHA256" \
+    && echo "$CARLOS_WAR_SHA256  /carlos.war" | sha256sum -c -
+
+# Alias the selected WAR source so the runtime stage below mounts ONE fixed
+# stage name whichever path produced /carlos.war.
+FROM ${CARLOS_WAR_STAGE} AS warsrc
+
 FROM docker.io/library/tomcat:11.0-jdk21-temurin@sha256:f29ace5eff7f2787a8ecc0ec79d61423e6129bcc8ee31eda9a8caa945796fb37
 ENV TZ=UTC
 # Drop the stock webapps; serve CARLOS at /carlos and redirect / there.
@@ -142,11 +182,12 @@ RUN rm -rf /usr/local/tomcat/webapps/* \
 # digest-pinned base image (an integrity-pinned lineage), so pinning each package
 # would add checksum-maintenance churn for no added supply-chain guarantee. See
 # the README supply-chain note.
-# The WAR is bind-mounted from the build stage rather than COPY'd: a COPY into
+# The WAR is bind-mounted from the selected source stage (warsrc = compile or
+# download, see CARLOS_WAR_STAGE above) rather than COPY'd: a COPY into
 # /tmp creates a layer carrying the full WAR bytes that a later `rm` cannot
 # remove from the image — roughly doubling the shipped payload next to the
 # exploded tree. The mount leaves no layer behind.
-RUN --mount=type=bind,from=build,source=/carlos.war,target=/tmp/carlos.war \
+RUN --mount=type=bind,from=warsrc,source=/carlos.war,target=/tmp/carlos.war \
     apt-get update \
     && apt-get install -y --no-install-recommends unzip \
     && mkdir /usr/local/tomcat/webapps/carlos \

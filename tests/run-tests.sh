@@ -152,6 +152,12 @@ HOSTFW_ENABLED=0
 OBS_HTTP_USER=obs
 CARLOS_DB_ROOT_PASSWORD=test-root-pw
 CARLOS_TLS_MODE=manual
+CARLOS_REF=auto
+CARLOS_ARTIFACT=auto
+CARLOS_SOURCE_BRANCH=main
+DRUGREF_REF=auto
+DRUGREF_ARTIFACT=auto
+DRUGREF_SOURCE_BRANCH=master
 EOF
     chmod 0600 "$home/container/carlos-app.env"
     printf 'db_username=carlos\ndb_password=app-pw\n' > "$home/container/conf/carlos/carlos.properties"
@@ -402,11 +408,104 @@ cp "$WORK/subid-wide/subuid" "$WORK/subid-wide/subgid"
 refute "a full-width grant produces no subid warning" \
     bash -c "cd '$ROOT' && CARLOS_SUBID_DIR='$WORK/subid-wide' EMR_HOME='$HBD' \
         python3 -m carlos_ctl.cli build 2>&1 | grep -q 'sub-ids\|subuids\|subgids'"
+# Manual moving refs written into the env FILE (it wins over process env):
+# under the auto default this home would resolve pinned WAR releases, which
+# legitimately SATISFY release mode — the refusal under test is specifically
+# a manual moving-branch source ref.
+HRELREF="$WORK/h-relref"; mk_home "$HRELREF"
+touch "$HRELREF/build/Containerfile" "$HRELREF/build/Containerfile.drugref"
+printf 'CARLOS_REF=develop\nDRUGREF_REF=master\n' >> "$HRELREF/container/carlos-app.env"
 refute "release mode refuses a moving (non-40-hex) source ref" \
-    ctle "$HBD" CARLOS_BUILD_MODE=release -- build
+    ctle "$HRELREF" CARLOS_BUILD_MODE=release -- build
 assert "rollback retags both images and re-plays" ctl "$HBD" rollback
 refute "rollback refuses when drugref :previous is missing (lockstep guard)" \
     ctle "$HBD" STUB_NO_DRUGREF_PREV=1 -- rollback
+
+# ================= source selection (release-first + sticky pin) =================
+# carlos_ctl.source: CARLOS_REF=auto resolves the newest GitHub release on the
+# FIRST build (WAR artifact preferred), pins it in build/.source-pin, and every
+# later build is OFFLINE on that pin — no drift without operator intervention.
+# The curl stub answers api.github.com deterministically (STUB_GH_*).
+HSRC="$WORK/h-source"; mk_home "$HSRC"
+touch "$HSRC/build/Containerfile" "$HSRC/build/Containerfile.drugref"
+m=$(mark)
+assert "first auto build resolves the newest release and pins it" ctl "$HSRC" build
+assert "the resolve queried the GitHub releases API" \
+    log_since "$m" "api.github.com/repos/carlos-emr/carlos/releases"
+assert "the source pin was persisted" test -s "$HSRC/build/.source-pin"
+assert "the pinned release COMMIT drives CARLOS_REF (never the mutable tag)" \
+    log_since "$m" "CARLOS_REF=1111111111111111111111111111111111111111"
+assert "the published WAR selects the download stage" \
+    log_since "$m" "CARLOS_WAR_STAGE=download"
+assert "the WAR sha256 rides along for the in-image verification" \
+    log_since "$m" "CARLOS_WAR_SHA256=dddddddddddddddddddddddddddddddd"
+# DrugRef rides the SAME contract under its own keys and pin.
+assert "the DrugRef source pin was persisted" test -s "$HSRC/build/.source-pin.drugref"
+assert "the pinned DrugRef release COMMIT drives DRUGREF_REF" \
+    log_since "$m" "DRUGREF_REF=3333333333333333333333333333333333333333"
+assert "the DrugRef published WAR selects its download stage" \
+    log_since "$m" "DRUGREF_WAR_STAGE=download"
+assert "the DrugRef WAR sha256 rides along" \
+    log_since "$m" "DRUGREF_WAR_SHA256=ffffffffffffffffffffffffffffffff"
+m=$(mark)
+assert "a PINNED build works with the GitHub API down (sticky = offline)" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- build
+refute "the pinned build made no GitHub API call" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q api.github.com"
+assert "source show prints the pinned CARLOS release" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HSRC' python3 -m carlos_ctl.cli source | grep -q 2026.08.0"
+assert "source show prints the pinned DrugRef release" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HSRC' python3 -m carlos_ctl.cli source | grep -q v1.0.0rc2"
+rm -f "$HSRC/build/.source-pin"
+refute "an UNPINNED auto build refuses when the API is down" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- build
+assert "the refusal points at 'source set' (the offline escape hatch)" \
+    bash -c "cd '$ROOT' && STUB_GH_DOWN=1 EMR_HOME='$HSRC' \
+        python3 -m carlos_ctl.cli build 2>&1 | grep -q 'source set'"
+assert "source set <sha> pins offline" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- source set 2222222222222222222222222222222222222222
+m=$(mark)
+assert "the manual sha pin drives the next build" ctl "$HSRC" build
+assert "the sha pin becomes CARLOS_REF" \
+    log_since "$m" "CARLOS_REF=2222222222222222222222222222222222222222"
+refute "a bare-commit pin compiles from source (no WAR stage)" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q CARLOS_WAR_STAGE=download"
+assert "source update re-resolves to the newest release" ctl "$HSRC" source update
+assert "the pin moved back to the release" grep -q 2026.08.0 "$HSRC/build/.source-pin"
+assert "a no-release repo falls back to the branch HEAD sha" \
+    bash -c "cd '$ROOT' && STUB_GH_RELEASES=none EMR_HOME='$HSRC' \
+        python3 -m carlos_ctl.cli source update >/dev/null 2>&1 \
+        && grep -q '\"kind\": \"branch\"' '$HSRC/build/.source-pin'"
+# DrugRef manual/sticky flows: set --drugref targets the DrugRef pin only,
+# and its no-release fallback honors DRUGREF_SOURCE_BRANCH (master).
+assert "source set --drugref <sha> pins DrugRef offline" \
+    ctle "$HSRC" STUB_GH_DOWN=1 -- source set --drugref 4444444444444444444444444444444444444444
+m=$(mark)
+assert "the manual DrugRef pin drives the next build" ctl "$HSRC" build
+assert "the DrugRef sha pin becomes DRUGREF_REF" \
+    log_since "$m" "DRUGREF_REF=4444444444444444444444444444444444444444"
+refute "a bare-commit DrugRef pin compiles from source (no WAR stage)" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q DRUGREF_WAR_STAGE=download"
+assert "a no-release DrugRef repo falls back to its master branch HEAD" \
+    bash -c "cd '$ROOT' && STUB_GH_DR_RELEASES=none EMR_HOME='$HSRC' \
+        python3 -m carlos_ctl.cli source update >/dev/null 2>&1 \
+        && grep -q '\"branch\": \"master\"' '$HSRC/build/.source-pin.drugref'"
+# Prerelease-only repo — TODAY's live carlos-emr/carlos state (one prerelease,
+# 2026.08.0-alpha1, shipping a WAR): the fresh-install path must resolve it,
+# pin it, and build from its WAR end to end.
+HPRE="$WORK/h-source-pre"; mk_home "$HPRE"
+touch "$HPRE/build/Containerfile" "$HPRE/build/Containerfile.drugref"
+m=$(mark)
+assert "a prerelease-only repo resolves the prerelease on first build" \
+    ctle "$HPRE" STUB_GH_RELEASES=prerelease-only -- build
+assert "the prerelease tag is pinned" grep -q 2026.08.0-alpha1 "$HPRE/build/.source-pin"
+assert "the prerelease's WAR selects the download stage" \
+    log_since "$m" "CARLOS_WAR_STAGE=download"
+
+assert "source clear removes the pins" ctl "$HSRC" source clear
+assert "both pin files are gone" \
+    bash -c "! test -e '$HSRC/build/.source-pin' && ! test -e '$HSRC/build/.source-pin.drugref'"
+refute "source rejects unknown sub-verbs" ctl "$HSRC" source frobnicate
 
 # Rollback schema-compatibility guard: rolling the CODE back never reverses
 # hand-applied SQL migrations. play records the live schema fingerprint,

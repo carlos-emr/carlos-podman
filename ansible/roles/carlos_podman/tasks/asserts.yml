@@ -178,6 +178,19 @@
       ON, BC, or generic (the provinces CARLOS implements billing for);
       billregion in carlos.properties renders from this value.
 
+- name: Artifact selection is a value carlos-ctl recognizes
+  # <APP>_ARTIFACT is a closed enum; the CLI hard-fails on anything else
+  # (source.py:_artifact_cfg) — catch the typo at provisioning time, before
+  # it fails the first build on the target.
+  ansible.builtin.assert:
+    that:
+      - carlos_artifact in ['auto', 'war', 'source']
+      - carlos_drugref_artifact in ['auto', 'war', 'source']
+    fail_msg: >-
+      carlos_artifact='{{ carlos_artifact }}' /
+      carlos_drugref_artifact='{{ carlos_drugref_artifact }}' — each must be one
+      of auto (prefer the release's published WAR), war, or source.
+
 - name: acme mode requires a real SERVER_NAME (HTTP-01 must resolve to this host)
   # The shipped default carlos_server_name is the documentation placeholder
   # emr.example.ca — in acme mode certbot would request a Let's Encrypt cert
@@ -469,17 +482,33 @@
         (hostvars[item]['carlos_ref'] | default(_role_defaults.carlos_ref))
         == carlos_ref
       - >-
+        (hostvars[item]['carlos_artifact'] | default(_role_defaults.carlos_artifact))
+        == carlos_artifact
+      - >-
+        (hostvars[item]['carlos_source_branch'] | default(_role_defaults.carlos_source_branch))
+        == carlos_source_branch
+      - >-
         (hostvars[item]['carlos_drugref_ref'] | default(_role_defaults.carlos_drugref_ref))
         == carlos_drugref_ref
+      - >-
+        (hostvars[item]['carlos_drugref_artifact'] | default(_role_defaults.carlos_drugref_artifact))
+        == carlos_drugref_artifact
+      - >-
+        (hostvars[item]['carlos_drugref_source_branch'] | default(_role_defaults.carlos_drugref_source_branch))
+        == carlos_drugref_source_branch
     fail_msg: >-
       instance '{{ carlos_instance }}' shares service user
       '{{ carlos_service_user }}' (one podman engine / image store) with
       sibling
       '{{ hostvars[item]['carlos_instance'] | default(_role_defaults.carlos_instance) }}'
       on {{ ansible_host | default(inventory_hostname) }} but disagrees on
-      carlos_image/carlos_drugref_image/carlos_ref/carlos_drugref_ref — a
+      carlos_image/carlos_drugref_image/carlos_ref/carlos_artifact/
+      carlos_source_branch/carlos_drugref_ref/carlos_drugref_artifact/
+      carlos_drugref_source_branch — a
       `build` in one instance would silently retag what the other runs
-      (carlos-ctl build builds BOTH images from the per-instance refs). Align
+      (carlos-ctl build builds BOTH images from the per-instance refs, and
+      under carlos_ref=auto each instance also keeps its OWN source pin —
+      run `carlos-ctl source update` in lockstep across siblings). Align
       the image vars, or give each instance its own carlos_service_user.
   loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
   when:

@@ -153,7 +153,7 @@ class TestBuild:
     def test_release_build_records_release_posture(self, mk_runner) -> None:
         r = mk_runner(
             f"CARLOS_REF={_SHA}\nDRUGREF_REF={_SHA}\n"
-            "CARLOS_SRC_SHA256=deadbeef\nDRUGREF_SRC_SHA256=deadbeef\n"
+            "CARLOS_SRC_SHA256=abababababababababababababababababababababababababababababababab\nDRUGREF_SRC_SHA256=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n"
             "SOURCE_DATE_EPOCH=1751500000\n",
             {"CARLOS_BUILD_MODE": "release"},
         )
@@ -176,7 +176,7 @@ class TestBuild:
             {"CARLOS_BUILD_MODE": "release"},
         )
         _seed_build_ctx(r)
-        with pytest.raises(CtlError, match="CARLOS_SRC_SHA256 is unset"):
+        with pytest.raises(CtlError, match="CARLOS_SRC_SHA256 is not a 64-hex"):
             cmd_build(r, [])
 
     def test_missing_containerfile_refused(self, mk_runner) -> None:
@@ -215,7 +215,7 @@ class TestBuildSmokeAndEpoch:
     def test_release_requires_source_date_epoch(self, mk_runner) -> None:
         r = mk_runner(
             f"CARLOS_REF={_SHA}\nDRUGREF_REF={_SHA}\n"
-            "CARLOS_SRC_SHA256=deadbeef\nDRUGREF_SRC_SHA256=deadbeef\n",
+            "CARLOS_SRC_SHA256=abababababababababababababababababababababababababababababababab\nDRUGREF_SRC_SHA256=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n",
             {"CARLOS_BUILD_MODE": "release"},
         )
         _seed_build_ctx(r)
@@ -268,6 +268,187 @@ class TestBuildContextKnobs:
         assert "does not read" not in capsys.readouterr().err
 
 
+class TestSourcePinIntegration:
+    """`build` builds what carlos_ctl.source resolved: the sticky pin under
+    CARLOS_REF=auto (offline once pinned), WAR-artifact stage selection, and
+    the artifact-aware release gate."""
+
+    def _pin(self, r, app=None, **kw) -> None:
+        from carlos_ctl.source import CARLOS, SourcePin, write_pin
+
+        defaults = dict(ref=_SHA, kind="release", tag="2026.08.0", commit=_SHA,
+                        artifact="source")
+        defaults.update(kw)
+        write_pin(r, app or CARLOS, SourcePin(**defaults), implicit=False)
+
+    def test_auto_build_uses_the_pinned_sha_offline(self, mk_runner) -> None:
+        r = mk_runner(f"DRUGREF_REF={'b' * 40}\n")  # CARLOS_REF defaults to auto
+        _seed_build_ctx(r)
+        self._pin(r)
+        assert cmd_build(r, []) == 0
+        assert r.called_with(f"CARLOS_REF={_SHA}")
+        assert not any("api.github.com" in a for c in r.calls for a in c)
+
+    def test_auto_build_without_pin_refuses_offline_with_guidance(self, mk_runner) -> None:
+        r = mk_runner(f"DRUGREF_REF={'b' * 40}\n")  # no pin, curl unscripted
+        _seed_build_ctx(r)
+        with pytest.raises(CtlError, match="source set"):
+            cmd_build(r, [])
+        assert not any(list(c)[:1] == ["build"] for c in r.calls)
+
+    def test_war_pin_selects_the_download_stage(self, mk_runner) -> None:
+        r = mk_runner(f"DRUGREF_REF={'b' * 40}\n")
+        _seed_build_ctx(r)
+        self._pin(r, artifact="war", war_url="https://x/carlos-2026.08.0.war",
+                  war_sha256="d" * 64)
+        assert cmd_build(r, []) == 0
+        build = next(c for c in r.calls if "build" in c and "-f" in c)
+        assert "CARLOS_WAR_URL=https://x/carlos-2026.08.0.war" in build
+        assert f"CARLOS_WAR_SHA256={'d' * 64}" in build
+        assert "CARLOS_WAR_STAGE=download" in build
+
+    def test_source_pin_passes_no_war_args(self, mk_runner) -> None:
+        # ARG defaults must keep selecting the compile stage — the manual
+        # QUICKSTART recipe depends on it.
+        r = mk_runner(f"DRUGREF_REF={'b' * 40}\n")
+        _seed_build_ctx(r)
+        self._pin(r)
+        assert cmd_build(r, []) == 0
+        assert not any("CARLOS_WAR" in a for c in r.calls for a in c)
+
+    def test_war_pin_suppresses_the_moving_ref_warning(self, mk_runner, capsys) -> None:
+        # A WAR build is sha256-verified in-image whatever CARLOS_REF says;
+        # only the (unchanged, moving) DrugRef ref may warn here.
+        r = mk_runner(
+            f"CARLOS_REF=develop\nDRUGREF_REF={'b' * 40}\nCARLOS_ARTIFACT=war\n"
+            f"CARLOS_WAR_URL=https://x/x.war\nCARLOS_WAR_SHA256={'d' * 64}\n"
+        )
+        _seed_build_ctx(r)
+        assert cmd_build(r, []) == 0
+        assert "CARLOS_REF=" not in capsys.readouterr().err
+
+    def test_release_mode_war_pin_needs_no_src_sha256(self, mk_runner) -> None:
+        # The published WAR's sha256 IS the content checksum for the CARLOS
+        # image; the source-tarball checksum is a compile-only layer.
+        r = mk_runner(
+            f"DRUGREF_REF={_SHA}\nDRUGREF_SRC_SHA256=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n"
+            "SOURCE_DATE_EPOCH=1751500000\n",
+            {"CARLOS_BUILD_MODE": "release"},
+        )
+        _seed_build_ctx(r)
+        self._pin(r, artifact="war", war_url="https://x/x.war", war_sha256="d" * 64)
+        assert cmd_build(r, []) == 0
+        assert (r.settings.emr_home / "build" / ".build-mode").read_text().strip() == "release"
+
+    def test_a_war_pin_without_sha_is_rejected_at_read_time(self, mk_runner, capsys) -> None:
+        # A WAR pin with no usable sha256 cannot be produced by write_pin —
+        # only corruption/hand-editing. read_pin now degrades it to "no pin"
+        # (warned), so the build refuses with resolve guidance instead of
+        # dying 20s into podman with an ADD error that reads like a
+        # Containerfile bug.
+        r = mk_runner(
+            f"DRUGREF_REF={_SHA}\nDRUGREF_SRC_SHA256=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n"
+            "SOURCE_DATE_EPOCH=1751500000\n",
+            {"CARLOS_BUILD_MODE": "release"},
+        )
+        _seed_build_ctx(r)
+        self._pin(r, artifact="war", war_url="https://x/x.war", war_sha256="")
+        with pytest.raises(CtlError, match="source set"):
+            cmd_build(r, [])  # offline in tests -> re-resolve refuses cleanly
+        assert "implausible" in capsys.readouterr().err
+
+    def test_release_mode_source_pin_still_needs_src_sha256(self, mk_runner) -> None:
+        r = mk_runner(
+            f"DRUGREF_REF={_SHA}\nDRUGREF_SRC_SHA256=cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\n"
+            "SOURCE_DATE_EPOCH=1751500000\n",
+            {"CARLOS_BUILD_MODE": "release"},
+        )
+        _seed_build_ctx(r)
+        self._pin(r)  # artifact=source, sha-pinned ref
+        with pytest.raises(CtlError, match="CARLOS_SRC_SHA256 is not a 64-hex"):
+            cmd_build(r, [])
+
+    def test_drugref_war_pin_selects_its_download_stage(self, mk_runner) -> None:
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner(f"CARLOS_REF={_SHA}\n")  # DRUGREF_REF defaults to auto
+        _seed_build_ctx(r)
+        self._pin(r, app=DRUGREF, tag="v1.0.0rc2",
+                  artifact="war", war_url="https://x/drugref2.war",
+                  war_sha256="f" * 64)
+        assert cmd_build(r, []) == 0
+        dr_build = next(c for c in r.calls
+                        if "build" in c and "Containerfile.drugref" in " ".join(c))
+        assert "DRUGREF_WAR_URL=https://x/drugref2.war" in dr_build
+        assert f"DRUGREF_WAR_SHA256={'f' * 64}" in dr_build
+        assert "DRUGREF_WAR_STAGE=download" in dr_build
+        # The CARLOS build must not inherit DrugRef's WAR args (or vice versa).
+        carlos_build = next(c for c in r.calls if "build" in c and "-f" in c
+                            and str(c[c.index("-f") + 1]).endswith("/Containerfile"))
+        assert not any("DRUGREF_WAR" in a for a in carlos_build)
+        assert not any("CARLOS_WAR" in a for a in dr_build)
+
+    def test_all_war_release_build_needs_no_source_date_epoch(self, mk_runner) -> None:
+        # SOURCE_DATE_EPOCH pins COMPILE timestamps; an all-WAR release build
+        # runs no compiler, so requiring it would demand a meaningless knob.
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner("", {"CARLOS_BUILD_MODE": "release"})
+        _seed_build_ctx(r)
+        self._pin(r, artifact="war", war_url="https://x/x.war", war_sha256="d" * 64)
+        self._pin(r, app=DRUGREF, tag="v1.0.0rc2", artifact="war",
+                  war_url="https://x/drugref2.war", war_sha256="f" * 64)
+        assert cmd_build(r, []) == 0
+        assert (r.settings.emr_home / "build" / ".build-mode").read_text().strip() == "release"
+
+    def test_a_drugref_war_pin_without_sha_is_rejected_at_read_time(
+        self, mk_runner, capsys
+    ) -> None:
+        from carlos_ctl.source import DRUGREF
+
+        r = mk_runner(
+            f"CARLOS_REF={_SHA}\nCARLOS_SRC_SHA256=abababababababababababababababababababababababababababababababab\n"
+            "SOURCE_DATE_EPOCH=1751500000\n",
+            {"CARLOS_BUILD_MODE": "release"},
+        )
+        _seed_build_ctx(r)
+        self._pin(r, app=DRUGREF, tag="v1.0.0rc2", artifact="war",
+                  war_url="https://x/drugref2.war", war_sha256="")
+        with pytest.raises(CtlError, match="source set"):
+            cmd_build(r, [])
+        assert "implausible" in capsys.readouterr().err
+
+    def test_containerfile_drugref_carries_the_war_stage_plumbing(self) -> None:
+        from pathlib import Path
+
+        text = Path(__file__).resolve().parents[2].joinpath(
+            "Containerfile.drugref").read_text()
+        assert "ARG DRUGREF_WAR_URL" in text
+        assert "ARG DRUGREF_WAR_SHA256" in text
+        assert "ARG DRUGREF_WAR_STAGE=build" in text
+        assert "AS download" in text
+        assert "FROM ${DRUGREF_WAR_STAGE} AS warsrc" in text
+        assert "from=warsrc" in text and "from=build" not in text
+        assert 'test -n "$DRUGREF_WAR_SHA256"' in text
+        assert "sha256sum -c" in text
+
+    def test_containerfile_carries_the_war_stage_plumbing(self) -> None:
+        from pathlib import Path
+
+        text = Path(__file__).resolve().parents[2].joinpath("Containerfile").read_text()
+        assert "ARG CARLOS_WAR_URL" in text
+        assert "ARG CARLOS_WAR_SHA256" in text
+        assert "ARG CARLOS_WAR_STAGE=build" in text
+        assert "AS download" in text
+        # The alias stage is what makes the runtime mount switchable.
+        assert "FROM ${CARLOS_WAR_STAGE} AS warsrc" in text
+        assert "from=warsrc" in text and "from=build" not in text
+        # The sha256 verification is MANDATORY in the download stage — an
+        # unverified URL-fetched WAR must fail the build, not ship.
+        assert 'test -n "$CARLOS_WAR_SHA256"' in text
+        assert "sha256sum -c" in text
+
+
 class TestBuildIdentityStamp:
     """The app pom rewrites carlos.properties' buildVersion from the Jenkins
     env vars JOB_NAME/BUILD_NUMBER via Ant's `<property environment="env"/>`.
@@ -304,3 +485,58 @@ class TestBuildIdentityStamp:
         # pre-authentication, and the exact source revision is not something
         # to hand an anonymous visitor.
         assert "BUILD_NUMBER=${CARLOS_REF}" not in text
+
+
+class TestReleaseGateChecksumFormat:
+    """The gate's claim is "content-checksummed": an 8-char string that cannot
+    possibly be a sha256 must not satisfy it."""
+
+    def test_release_mode_refuses_a_non_sha256_src_checksum(self, mk_runner) -> None:
+        r = mk_runner(
+            f"CARLOS_REF={_SHA}\nDRUGREF_REF={_SHA}\n"
+            "CARLOS_SRC_SHA256=deadbeef\nDRUGREF_SRC_SHA256=deadbeef\n"
+            "SOURCE_DATE_EPOCH=1751500000\n",
+            {"CARLOS_BUILD_MODE": "release"},
+        )
+        _seed_build_ctx(r)
+        with pytest.raises(CtlError, match="not a 64-hex"):
+            cmd_build(r, [])
+
+
+class TestRebuildDescribesWhatWasBuilt:
+    """cmd_rebuild's messages come from cmd_build's own record — never a
+    second resolve_for_build, which could hit the network (implicit pin write
+    failed) or describe a newer release than the one in the image."""
+
+    def test_build_records_descriptions_for_rebuild(self, mk_runner) -> None:
+        import carlos_ctl.build as build_mod
+
+        build_mod._last_built.clear()
+        r = mk_runner(f"CARLOS_REF={_SHA}\nDRUGREF_REF={'b' * 40}\n")
+        _seed_build_ctx(r)
+        assert cmd_build(r, []) == 0
+        assert _SHA[:12] in build_mod._last_built["carlos"]
+        assert ("b" * 40)[:12] in build_mod._last_built["drugref"]
+
+    def test_rebuild_messages_never_resolve_again(self, mk_runner, monkeypatch) -> None:
+        import carlos_ctl.build as build_mod
+        import carlos_ctl.source as source_mod
+
+        r = mk_runner(f"CARLOS_REF={_SHA}\nDRUGREF_REF={'b' * 40}\n")
+        _seed_build_ctx(r)
+        calls = {"n": 0}
+        real = source_mod.resolve_for_build
+
+        def counting(runner, app):
+            calls["n"] += 1
+            return real(runner, app)
+
+        monkeypatch.setattr(source_mod, "resolve_for_build", counting)
+        monkeypatch.setattr(build_mod.lifecycle2 if hasattr(build_mod, "lifecycle2")
+                            else __import__("carlos_ctl.lifecycle2", fromlist=["x"]),
+                            "cmd_play", lambda runner, args: 0)
+        assert build_mod.cmd_rebuild(r, []) == 0
+        # cmd_build resolves via resolve_pair_for_build (which shares
+        # _resolve_app, not this wrapper); nothing in the rebuild path calls
+        # resolve_for_build at all — the messages come from cmd_build's record.
+        assert calls["n"] == 0

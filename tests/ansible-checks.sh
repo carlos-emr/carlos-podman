@@ -324,6 +324,19 @@ if ! grep -q "^CARLOS_TLS_MODE=acme" "$WORK/render-acme/carlos-app.env"; then
     fail=1
 fi
 
+echo "==> source selection: the default render carries the auto version/artifact keys"
+# carlos_ref defaults to `auto` (release-first sticky resolution) and the
+# CLI's resolver reads CARLOS_ARTIFACT/CARLOS_SOURCE_BRANCH from the same
+# render — a template that drops one silently reverts an instance to manual
+# semantics (or the built-in default) on the next playbook run.
+for want in "^CARLOS_REF=auto" "^CARLOS_ARTIFACT=auto" "^CARLOS_SOURCE_BRANCH=main" \
+            "^DRUGREF_REF=auto" "^DRUGREF_ARTIFACT=auto" "^DRUGREF_SOURCE_BRANCH=master"; do
+    if ! grep -q "$want" "$WORK/render-on/carlos-app.env"; then
+        echo "FAIL: the default render is missing '$want' in carlos-app.env"
+        fail=1
+    fi
+done
+
 echo "==> host firewall: default-ON renders the default-deny table with SSH + daddr-qualified log-view"
 # hostfw is ON by default now (finding 48). The default render must carry the
 # drop-policy input chain, the SSH allow (or you lock yourself out), and the

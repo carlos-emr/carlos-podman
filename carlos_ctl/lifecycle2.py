@@ -912,10 +912,15 @@ def cmd_play(runner: Runner, args: List[str]) -> int:
     mode_file = s.emr_home / "build" / ".build-mode"
     with contextlib.suppress(OSError):
         if mode_file.is_file() and mode_file.read_text().strip() != "release":
+            # Wording: "not release-gated", not "no source checksum" — a
+            # dev-mode CARLOS build may be a sha256-verified release WAR (the
+            # auto default), but the DrugRef compile and the dependency-lock
+            # posture are only pinned under the release gate.
             warn(
-                "the installed images were DEV-MODE built (moving source ref, no source "
-                "checksum) — for production, rebuild with CARLOS_BUILD_MODE=release "
-                "(40-hex CARLOS_REF/DRUGREF_REF + CARLOS_SRC_SHA256/DRUGREF_SRC_SHA256)"
+                "the installed images were NOT built under CARLOS_BUILD_MODE=release — "
+                "for production, rebuild with it (per app: a source-compiled app needs "
+                "its 40-hex ref + *_SRC_SHA256; a WAR-artifact app needs its pinned "
+                "WAR sha256)"
             )
     yamls = [s.rendered_yaml, s.rendered_waf_yaml] + (
         [s.rendered_obs_yaml] if s.obs_enabled else []
