@@ -536,4 +536,7 @@ class TestRebuildDescribesWhatWasBuilt:
                             else __import__("carlos_ctl.lifecycle2", fromlist=["x"]),
                             "cmd_play", lambda runner, args: 0)
         assert build_mod.cmd_rebuild(r, []) == 0
-        assert calls["n"] == 2  # exactly the two resolves inside cmd_build
+        # cmd_build resolves via resolve_pair_for_build (which shares
+        # _resolve_app, not this wrapper); nothing in the rebuild path calls
+        # resolve_for_build at all — the messages come from cmd_build's record.
+        assert calls["n"] == 0

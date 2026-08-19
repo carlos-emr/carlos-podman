@@ -1121,9 +1121,10 @@ def _check_build_posture(m: MonitorRun) -> None:
         # every source (incl. the DrugRef compile) and the dependency lock.
         m.alert(
             "the deployed images were NOT built under CARLOS_BUILD_MODE=release — "
-            "rebuild with it (pinned 40-hex refs + content checksums) for an audited "
-            "production image, or set CARLOS_ACCEPT_UNPINNED_BUILD=1 to accept the "
-            "posture",
+            "rebuild with it for an audited production image (per app: a "
+            "source-compiled app needs its 40-hex ref + *_SRC_SHA256; a WAR-artifact "
+            "app needs its pinned WAR sha256), or set CARLOS_ACCEPT_UNPINNED_BUILD=1 "
+            "to accept the posture",
             "build-unpinned",
         )
 

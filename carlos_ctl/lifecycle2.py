@@ -918,9 +918,9 @@ def cmd_play(runner: Runner, args: List[str]) -> int:
             # posture are only pinned under the release gate.
             warn(
                 "the installed images were NOT built under CARLOS_BUILD_MODE=release — "
-                "for production, rebuild with it (pinned 40-hex refs + content "
-                "checksums: DRUGREF_SRC_SHA256 always, and CARLOS_SRC_SHA256 for "
-                "source builds / the pinned WAR sha256 for WAR builds)"
+                "for production, rebuild with it (per app: a source-compiled app needs "
+                "its 40-hex ref + *_SRC_SHA256; a WAR-artifact app needs its pinned "
+                "WAR sha256)"
             )
     yamls = [s.rendered_yaml, s.rendered_waf_yaml] + (
         [s.rendered_obs_yaml] if s.obs_enabled else []

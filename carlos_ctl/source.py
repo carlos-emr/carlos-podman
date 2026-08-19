@@ -142,7 +142,18 @@ def read_pin(runner: Runner, app: AppSource) -> Optional[SourcePin]:
     path = pin_path(runner, app)
     try:
         raw = path.read_text()
-    except OSError:
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        # An EXISTING pin that cannot be read is not "no pin": degrading
+        # silently would let the next auto build re-resolve — and possibly
+        # move to a newer release — with no operator-visible signal, the
+        # exact drift the pin exists to prevent. Warn, then degrade.
+        warn(
+            f"{path} exists but could not be read ({e}) — ignoring it; the next "
+            f"auto build re-resolves and MAY move to a newer release (fix the "
+            f"file, or 'carlos-ctl source set' pins manually)"
+        )
         return None
     try:
         data = json.loads(raw)
@@ -232,16 +243,36 @@ def _gh_json(runner: Runner, url: str) -> Optional[object]:
         return None
 
 
+# Release-pagination ceiling: 10 pages x 100 = 1000 releases. Far above any
+# plausible history for these repos, and a hard stop keeps a pathological
+# API answer from turning one resolve into an unbounded crawl.
+_MAX_RELEASE_PAGES = 10
+
+
 def list_releases(runner: Runner, app: AppSource) -> Optional[List[dict]]:
     """All non-draft releases, newest published first. None = API unreachable
-    (distinct from [] = reachable, no releases). Drafts are invisible to
-    consumers and carry no stable assets; a missing published_at sorts last
-    (ISO-8601 strings order lexicographically, and '' loses every descending
-    comparison)."""
-    data = _gh_json(runner, f"https://api.github.com/repos/{app.repo}/releases?per_page=100")
-    if data is None or not isinstance(data, list):
-        return None
-    releases = [r for r in data if isinstance(r, dict) and not r.get("draft")]
+    (distinct from [] = reachable, no releases).
+
+    EVERY page is fetched before sorting: the REST endpoint orders by
+    created_at with no sort parameter, so page 1 is not guaranteed to hold
+    the newest release by published_at, and an older tag passed to `source
+    set` must not be misread as a branch just because it fell off page 1.
+    A page N>1 failure returns None like a page-1 failure — a silently
+    truncated list could mispick, and "unreachable" is the honest answer.
+    Drafts are invisible to consumers and carry no stable assets; a missing
+    published_at sorts last (ISO-8601 strings order lexicographically, and
+    '' loses every descending comparison)."""
+    releases: List[dict] = []
+    for page in range(1, _MAX_RELEASE_PAGES + 1):
+        data = _gh_json(
+            runner,
+            f"https://api.github.com/repos/{app.repo}/releases?per_page=100&page={page}",
+        )
+        if data is None or not isinstance(data, list):
+            return None
+        releases.extend(r for r in data if isinstance(r, dict) and not r.get("draft"))
+        if len(data) < 100:
+            break
     releases.sort(key=lambda r: str(r.get("published_at") or ""), reverse=True)
     return releases
 
@@ -457,27 +488,19 @@ def _manual_pin(runner: Runner, app: AppSource) -> SourcePin:
     )
 
 
-def resolve_for_build(runner: Runner, app: AppSource) -> SourcePin:
-    """What `build` should build for one app, resolved exactly once per
-    selection:
-
-    - manual <APP>_REF → passthrough (no network, no pin);
-    - auto + existing pin → the pin, offline (<APP>_ARTIFACT=war/source may
-      override the pinned artifact for THIS run without rewriting the pin);
-    - auto + no pin → resolve per policy, PERSIST, return.
-    """
+def _resolve_app(runner: Runner, app: AppSource) -> Tuple[SourcePin, bool]:
+    """One app's build selection WITHOUT persisting anything. Returns
+    (pin, needs_persist): needs_persist is True only for a fresh policy
+    resolve whose pin has not been written yet — the caller decides when
+    (resolve_for_build: immediately; resolve_pair_for_build: only after
+    BOTH apps resolved, so a second-app failure cannot leave a half-pinned
+    pair behind)."""
     s = runner.settings
     if s.get(f"{app.prefix}_REF") != "auto":
-        return _manual_pin(runner, app)
+        return _manual_pin(runner, app), False
     pin = read_pin(runner, app)
     if pin is None:
-        pin = resolve_policy(runner, app)
-        write_pin(runner, app, pin, implicit=True)
-        log(
-            f"pinned {app.label} source: {pin.describe()} — future builds stay on "
-            f"this until 'carlos-ctl source update' (or set/clear)"
-        )
-        return pin
+        return resolve_policy(runner, app), True
     forced = _artifact_cfg(runner, app)
     if forced == "war" and pin.artifact != "war":
         if not (pin.war_url and pin.war_sha256):
@@ -490,7 +513,45 @@ def resolve_for_build(runner: Runner, app: AppSource) -> SourcePin:
     elif forced == "source" and pin.artifact != "source":
         # One-run override: the pin keeps its WAR data so flipping back is free.
         pin = dataclasses.replace(pin, artifact="source")
+    return pin, False
+
+
+def _persist_fresh(runner: Runner, app: AppSource, pin: SourcePin) -> None:
+    write_pin(runner, app, pin, implicit=True)
+    log(
+        f"pinned {app.label} source: {pin.describe()} — future builds stay on "
+        f"this until 'carlos-ctl source update' (or set/clear)"
+    )
+
+
+def resolve_for_build(runner: Runner, app: AppSource) -> SourcePin:
+    """What `build` should build for one app, resolved exactly once per
+    selection:
+
+    - manual <APP>_REF → passthrough (no network, no pin);
+    - auto + existing pin → the pin, offline (<APP>_ARTIFACT=war/source may
+      override the pinned artifact for THIS run without rewriting the pin);
+    - auto + no pin → resolve per policy, PERSIST, return.
+    """
+    pin, needs_persist = _resolve_app(runner, app)
+    if needs_persist:
+        _persist_fresh(runner, app, pin)
     return pin
+
+
+def resolve_pair_for_build(runner: Runner) -> Tuple[SourcePin, SourcePin]:
+    """Both apps' build selections, resolved BEFORE either fresh pin is
+    persisted: a DrugRef resolution failure (rate limit mid-pair, partial
+    outage) must abort the build with NO pin written — not leave CARLOS
+    pinned at one time and DrugRef unpinned for a later resolve, the
+    half-updated pair the sibling-alignment invariant forbids."""
+    carlos_pin, carlos_fresh = _resolve_app(runner, CARLOS)
+    drugref_pin, drugref_fresh = _resolve_app(runner, DRUGREF)
+    if carlos_fresh:
+        _persist_fresh(runner, CARLOS, carlos_pin)
+    if drugref_fresh:
+        _persist_fresh(runner, DRUGREF, drugref_pin)
+    return carlos_pin, drugref_pin
 
 
 # --- the `source` verb --------------------------------------------------------
@@ -596,14 +657,35 @@ def cmd_source(runner: Runner, args: List[str]) -> int:
             (app, read_pin(runner, app), resolve_policy(runner, app))
             for app in auto_apps
         ]
-        for app, before, pin in resolved:
-            write_pin(runner, app, pin, implicit=False)
-            if before is not None and (before.ref, before.artifact) != (pin.ref, pin.artifact):
-                log(f"{app.label} updated: {before.describe()} -> {pin.describe()}")
-            elif before is not None:
-                log(f"{app.label} already current: {pin.describe()}")
-            else:
-                log(f"{app.label} pinned: {pin.describe()}")
+        # Best-effort pair atomicity for the WRITES too: if a later pin write
+        # fails (disk full between writes), restore the earlier apps' previous
+        # pins rather than leaving a half-updated pair.
+        written = []
+        try:
+            for app, before, pin in resolved:
+                write_pin(runner, app, pin, implicit=False)
+                written.append((app, before))
+                if before is not None and (before.ref, before.artifact) != (pin.ref, pin.artifact):
+                    log(f"{app.label} updated: {before.describe()} -> {pin.describe()}")
+                elif before is not None:
+                    log(f"{app.label} already current: {pin.describe()}")
+                else:
+                    log(f"{app.label} pinned: {pin.describe()}")
+        except CtlError:
+            for app, before in written:
+                try:
+                    if before is not None:
+                        write_pin(runner, app, before, implicit=True)
+                    else:
+                        pin_path(runner, app).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if written:
+                warn(
+                    "the failed update was rolled back — earlier pins were restored "
+                    "to their previous state (best effort)"
+                )
+            raise
         log("deploy with 'carlos-ctl rebuild'")
         return 0
     if verb == "clear":

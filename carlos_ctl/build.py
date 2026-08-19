@@ -152,8 +152,9 @@ def cmd_build(runner: Runner, args: List[str]) -> int:
     # drugref]. See carlos_ctl/source.py.
     from . import source as source_mod
 
-    pin = source_mod.resolve_for_build(runner, source_mod.CARLOS)
-    dpin = source_mod.resolve_for_build(runner, source_mod.DRUGREF)
+    # Pair-resolved: BOTH selections succeed before either fresh pin is
+    # persisted, so a mid-pair API failure aborts with no half-pinned state.
+    pin, dpin = source_mod.resolve_pair_for_build(runner)
     carlos_ref = pin.ref
     drugref_ref = dpin.ref
     _last_built["carlos"] = pin.describe()

@@ -722,3 +722,126 @@ class TestUpdateAtomicityAndAllManual:
         with pytest.raises(CtlError):
             cmd_source(r, ["update"])
         assert read_pin(r, CARLOS) == old
+
+
+class TestReleasePagination:
+    """The releases endpoint orders by created_at with no sort parameter and
+    pages at 100 — every page must be fetched before filtering/sorting, or an
+    older tag falls off page 1 and `set` misreads it as a branch."""
+
+    def _page(self, n, tags):
+        return json.dumps([_rel(t, published=f"2026-01-{n:02d}T00:00:00Z") for t in tags])
+
+    def test_all_pages_are_fetched_before_matching_a_tag(self, mk_runner) -> None:
+        r = mk_runner()
+        page1 = [f"v{i}" for i in range(100)]  # a full page forces page 2
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/releases?per_page=100&page=1",
+            out=json.dumps([_rel(t, published="2026-02-01T00:00:00Z") for t in page1]),
+        )
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/releases?per_page=100&page=2",
+            out=json.dumps([_rel("old-tag", published="2025-01-01T00:00:00Z")]),
+        )
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/commits/",
+            out=json.dumps({"sha": _SHA}),
+        )
+        assert cmd_source(r, ["set", "old-tag"]) == 0
+        pin = read_pin(r, CARLOS)
+        assert (pin.kind, pin.tag) == ("release", "old-tag")  # NOT a branch
+
+    def test_newest_by_published_at_can_live_on_a_later_page(self, mk_runner) -> None:
+        # GitHub pages by created_at; the newest published_at is not
+        # guaranteed on page 1.
+        r = mk_runner()
+        page1 = [_rel(f"v{i}", published="2026-01-01T00:00:00Z") for i in range(100)]
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/releases?per_page=100&page=1",
+            out=json.dumps(page1),
+        )
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/releases?per_page=100&page=2",
+            out=json.dumps([_rel("republished", published="2026-06-01T00:00:00Z")]),
+        )
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/commits/",
+            out=json.dumps({"sha": _SHA}),
+        )
+        assert resolve_policy(r, CARLOS).tag == "republished"
+
+    def test_a_failing_later_page_reads_as_unreachable(self, mk_runner) -> None:
+        # A silently truncated list could mispick — "unreachable" is honest.
+        r = mk_runner()
+        r.script(
+            "api.github.com/repos/carlos-emr/carlos/releases?per_page=100&page=1",
+            out=json.dumps([_rel(f"v{i}") for i in range(100)]),
+        )
+        # page 2 unscripted -> curl fails
+        with pytest.raises(CtlError, match="source set"):
+            resolve_policy(r, CARLOS)
+
+
+class TestPairAtomicResolution:
+    def test_build_pair_resolve_writes_no_pin_when_the_second_app_fails(
+        self, mk_runner
+    ) -> None:
+        # CARLOS resolves; DrugRef's API is down mid-pair — the CARLOS pin
+        # must NOT be persisted (no half-pinned pair for a later build).
+        r = mk_runner()
+        _gh(r, [_rel("2026.08.0", assets=_war_assets("2026.08.0"))])
+        with pytest.raises(CtlError):
+            source_mod.resolve_pair_for_build(r)
+        assert read_pin(r, CARLOS) is None
+        assert read_pin(r, DRUGREF) is None
+
+    def test_build_pair_resolve_persists_both_on_success(self, mk_runner) -> None:
+        r = mk_runner()
+        _gh(r, [_rel("2026.08.0", assets=_war_assets("2026.08.0"))])
+        _gh_dr(r, [_dr_rel("v1.0.0rc2")])
+        pin, dpin = source_mod.resolve_pair_for_build(r)
+        assert read_pin(r, CARLOS) == pin
+        assert read_pin(r, DRUGREF) == dpin
+
+    def test_update_rolls_back_the_first_pin_when_a_later_write_fails(
+        self, mk_runner, monkeypatch, capsys
+    ) -> None:
+        r = mk_runner()
+        old_pin = SourcePin(ref="e" * 40, kind="release", tag="2026.07.0",
+                            commit="e" * 40, artifact="source")
+        write_pin(r, CARLOS, old_pin, implicit=False)
+        _gh(r, [_rel("2026.08.0", assets=_war_assets("2026.08.0"))])
+        _gh_dr(r, [_dr_rel("v1.0.0rc2")])
+
+        real = source_mod.write_pin
+        calls = {"n": 0}
+
+        def failing_second_explicit(runner, app, pin, *, implicit):
+            if not implicit:
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise CtlError("disk full")
+            return real(runner, app, pin, implicit=implicit)
+
+        monkeypatch.setattr(source_mod, "write_pin", failing_second_explicit)
+        with pytest.raises(CtlError, match="disk full"):
+            cmd_source(r, ["update"])
+        # The CARLOS pin was restored to its previous state, not left moved.
+        assert read_pin(r, CARLOS) == old_pin
+        assert "rolled back" in capsys.readouterr().err
+
+
+class TestUnreadablePinWarns:
+    def test_an_existing_but_unreadable_pin_warns(self, mk_runner, capsys) -> None:
+        # The docstring promises a warning: a PermissionError/IsADirectoryError
+        # on an EXISTING pin silently re-resolving would be undetectable drift.
+        r = mk_runner()
+        path = source_mod.pin_path(r, CARLOS)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()  # a directory -> read_text raises IsADirectoryError
+        assert read_pin(r, CARLOS) is None
+        assert "could not be read" in capsys.readouterr().err
+
+    def test_an_absent_pin_stays_silent(self, mk_runner, capsys) -> None:
+        assert read_pin(mk_runner(), CARLOS) is None
+        assert capsys.readouterr().err == ""
