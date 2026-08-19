@@ -2966,6 +2966,40 @@ install inside a digest-pinned base image (an already integrity-pinned
 lineage), so per-package pins would add checksum-maintenance churn without a
 meaningful supply-chain gain.
 
+**Published prebuilt images (ghcr.io).** The two images this repo customizes
+are also published, pre-built, to GitHub Container Registry by the
+**Publish Images** workflow (`.github/workflows/publish-images.yml`,
+manually dispatched per app release):
+
+- `ghcr.io/carlos-emr/carlos-app` and `ghcr.io/carlos-emr/carlos-drugref`,
+  multi-arch (amd64 + arm64) manifest lists, built in **WAR mode** from the
+  app repos' release assets — the release WAR's sha256 is verified in-image,
+  so the chain composes: attested WAR → attested image → digest-pinned pull.
+- Tags: `<app-tag>-rN` is **immutable** (N = packaging generation — a
+  Containerfile fix or base-image bump for the same app version bumps N and
+  never re-pushes an existing tag); `<app-tag>` is a **mutable alias** to the
+  newest rN. The alias exists for humans and one-time digest discovery only —
+  anything that runs an image must reference the digest, the same
+  tag-for-humans / digest-for-trust model as every third-party
+  `repo:tag@sha256:` pin in this repo. No `latest` tag is ever published.
+- Every published manifest list carries a GitHub build-provenance
+  attestation. Verify before trusting a digest you didn't just publish:
+
+  ```bash
+  gh attestation verify oci://ghcr.io/carlos-emr/carlos-app:<app-tag>-rN --owner carlos-emr
+  podman pull ghcr.io/carlos-emr/carlos-app@sha256:<digest>   # pulls verify the digest
+  ```
+
+  Each workflow run's summary page prints the copy-pasteable digest-pinned
+  pull line (and manual pin env lines) per image.
+
+Local builds remain first-class and are the default: prebuilt images are an
+opt-in convenience for hosts that don't want to compile or download-and-bake
+per host, not a replacement for `carlos-ctl build`'s source/WAR modes.
+(One-time setup note for maintainers: new ghcr packages default **private**
+— after the first publish, an org admin must set both packages public and
+confirm they're linked to this repo.)
+
 **TLS-inspecting egress proxy.** On a host whose outbound HTTPS is
 re-terminated by a corporate/hospital proxy, the in-image Maven dependency
 fetch fails PKIX validation. Point `CARLOS_EXTRA_CA_BUNDLE` at the proxy's CA

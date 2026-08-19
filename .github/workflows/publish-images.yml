@@ -1,0 +1,355 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 CARLOS Contributors
+#
+# Manually dispatched publisher for the two customized images this repo
+# builds (carlos-app from Containerfile, carlos-drugref from
+# Containerfile.drugref), pushed to ghcr.io as multi-arch (amd64 + arm64)
+# manifest lists. Images are built in WAR mode only: the app repos' release
+# WARs already carry their own build-provenance attestations, so the chain
+# composes (attested WAR -> attested image -> digest-pinned pull by
+# carlos-ctl's <APP>_ARTIFACT=image mode).
+#
+# TAG SCHEME
+#   ghcr.io/<owner>/carlos-app:<app-tag>-rN   immutable, never reused; N is
+#                                             the packaging generation
+#                                             (Containerfile fix, base bump)
+#   ghcr.io/<owner>/carlos-app:<app-tag>      mutable alias -> newest rN
+# The alias is the ONE sanctioned mutable tag (cf. the app repo's
+# docs/release-process.md no-mutable-aliases rule): consumers read it once
+# at pin time to discover the digest, then pull by digest only, exactly as
+# this repo treats third-party repo:tag@sha256: pins. No `latest` is ever
+# pushed. PRs are not built here — tests.yml's containerfiles job already
+# `--check`s every PR, and full builds are deliberately kept out of CI.
+#
+# PARTIAL-RUN RECOVERY: every step is fail-fast. If a run dies after the
+# immutable -rN push (alias push or attestation failed), re-dispatch with
+# rebuild=N+1 — never delete or re-push an existing -rN; the alias then
+# repoints to the newest rN.
+#
+# FIRST PUBLISH: new ghcr packages default PRIVATE. After the first
+# successful run an org admin must set both packages public and confirm
+# they are linked to this repo (Packages -> package -> settings).
+
+name: Publish Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      carlos_tag:
+        description: "carlos release tag to package, or 'auto' (newest release, prereleases only as fallback)"
+        required: false
+        type: string
+        default: "auto"
+      drugref_tag:
+        description: "drugref2026 release tag to package, or 'auto'"
+        required: false
+        type: string
+        default: "auto"
+      rebuild:
+        description: "Packaging generation N for the immutable -rN tag; bump when republishing the same app tag"
+        required: false
+        type: string
+        default: "1"
+      skip_carlos:
+        description: "Skip the carlos-app image"
+        required: false
+        type: boolean
+        default: false
+      skip_drugref:
+        description: "Skip the carlos-drugref image"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-images
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read  # the immutability guard must see still-private packages
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Resolve app releases and plan the matrix
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          CARLOS_TAG: ${{ inputs.carlos_tag }}
+          DRUGREF_TAG: ${{ inputs.drugref_tag }}
+          REBUILD: ${{ inputs.rebuild }}
+          SKIP_CARLOS: ${{ inputs.skip_carlos }}
+          SKIP_DRUGREF: ${{ inputs.skip_drugref }}
+        run: |
+          set -euo pipefail
+          [[ "$REBUILD" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::rebuild must be a positive integer, got '$REBUILD'"; exit 1; }
+
+          # Selection mirrors carlos-ctl's release-first policy
+          # (carlos_ctl/source.py resolve_policy): drafts excluded, newest
+          # non-prerelease by published_at, else newest prerelease. NDJSON in
+          # via `gh api --paginate --jq '.[]'` so >100-release repos are
+          # handled (the same pagination bug class was already fixed in
+          # source.py — don't reintroduce it here).
+          pick_release() {  # stdin: NDJSON releases; argv: requested tag
+            python3 -c '
+          import json, sys
+          want = sys.argv[1]
+          rels = [json.loads(l) for l in sys.stdin if l.strip()]
+          rels = [r for r in rels if not r.get("draft")]
+          if want != "auto":
+              rels = [r for r in rels if r.get("tag_name") == want]
+              if not rels:
+                  sys.exit(f"requested tag {want!r} is not a (non-draft) release")
+          else:
+              stable = [r for r in rels if not r.get("prerelease")]
+              rels = stable or rels
+              if not rels:
+                  sys.exit("no releases found")
+              rels.sort(key=lambda r: r.get("published_at") or "", reverse=True)
+          print(json.dumps(rels[0]))' "$1"
+          }
+
+          find_war() {  # argv: release-json war-name-candidates...
+            # Emits exactly FOUR LINES: name, url, sha (may be empty), sibling
+            # .sha256 asset url (may be empty). One field per line because
+            # empty tab-separated fields collapse under bash `read` (tab is
+            # IFS whitespace).
+            python3 -c '
+          import json, sys
+          rel = json.loads(sys.argv[1])
+          names = sys.argv[2:]
+          assets = {a["name"]: a for a in rel.get("assets", [])}
+          for name in names:
+              a = assets.get(name)
+              if not a:
+                  continue
+              sha = (a.get("digest") or "").removeprefix("sha256:")
+              sib = assets.get(name + ".sha256")
+              sib_url = sib["browser_download_url"] if sib else ""
+              print(name)
+              print(a["browser_download_url"])
+              print(sha)
+              print(sib_url)
+              sys.exit(0)
+          tag = rel.get("tag_name")
+          sys.exit(f"release {tag!r} has no WAR asset matching {names!r}")' "$@"
+          }
+
+          ghcr_guard() {  # argv: image-path(owner/name) tag — fail if the manifest already exists
+            local path="$1" tag="$2" tok code
+            tok=$(curl -fsS -u "x:${GH_TOKEN}" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${path}:pull" \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -I \
+              -H "Authorization: Bearer ${tok}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${path}/manifests/${tag}")
+            case "$code" in
+              404) return 0 ;;  # absent — safe to publish
+              200) echo "::error::ghcr.io/${path}:${tag} already exists — immutable tags are never re-pushed; bump the rebuild input"; return 1 ;;
+              *)   echo "::error::immutability check for ghcr.io/${path}:${tag} failed with HTTP ${code}"; return 1 ;;
+            esac
+          }
+
+          entries=()
+          plan_app() {  # argv: app gh-repo requested-tag image-name arg-prefix containerfile webapp war-names...
+            local app="$1" repo="$2" want="$3" image_name="$4" arg_prefix="$5" cf="$6" webapp="$7"
+            shift 7
+            [[ "$want" == "auto" || "$want" =~ ^[A-Za-z0-9._-]+$ ]] \
+              || { echo "::error::tag input for ${app} has unexpected characters: '$want'"; exit 1; }
+            local rel tag names name url sha sib_url commit
+            rel=$(gh api --paginate "repos/${repo}/releases?per_page=100" --jq '.[]' | pick_release "$want")
+            tag=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["tag_name"])' "$rel")
+            names=()
+            for pat in "$@"; do names+=("${pat//\{tag\}/$tag}"); done
+            { read -r name; read -r url; read -r sha; read -r sib_url; } \
+              < <(find_war "$rel" "${names[@]}")
+            if [ -z "$sha" ]; then
+              [ -n "$sib_url" ] || { echo "::error::${app} ${tag}: WAR asset '${name}' has no digest and no .sha256 sibling — refusing an unverifiable image"; exit 1; }
+              sha=$(curl -fsSL "$sib_url" | awk 'NR==1{print $1}')
+            fi
+            [[ "$sha" =~ ^[0-9a-f]{64}$ ]] \
+              || { echo "::error::${app} ${tag}: could not obtain a 64-hex sha256 for '${name}' (got '${sha}')"; exit 1; }
+            commit=$(gh api "repos/${repo}/commits/${tag}" --jq .sha)
+            [[ "$commit" =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::${app} ${tag}: tag did not resolve to a commit sha"; exit 1; }
+            ghcr_guard "${OWNER}/${image_name}" "${tag}-r${REBUILD}"
+            entries+=("$(python3 -c '
+          import json, sys
+          k = ["app","image","arg_prefix","containerfile","webapp","app_tag","commit","war_url","war_sha256"]
+          print(json.dumps(dict(zip(k, sys.argv[1:]))))' \
+              "$app" "ghcr.io/${OWNER}/${image_name}" "$arg_prefix" "$cf" "$webapp" \
+              "$tag" "$commit" "$url" "$sha")")
+            echo "${app}: ${tag} (commit ${commit}) WAR ${name} sha256=${sha} -> ghcr.io/${OWNER}/${image_name}:${tag}-r${REBUILD}"
+          }
+
+          if [ "$SKIP_CARLOS" != "true" ]; then
+            plan_app carlos "${OWNER}/carlos" "$CARLOS_TAG" carlos-app CARLOS \
+              Containerfile carlos "carlos-{tag}.war"
+          fi
+          if [ "$SKIP_DRUGREF" != "true" ]; then
+            plan_app drugref "${OWNER}/drugref2026" "$DRUGREF_TAG" carlos-drugref DRUGREF \
+              Containerfile.drugref drugref2 "drugref2-{tag}.war" "drugref2.war"
+          fi
+          [ "${#entries[@]}" -gt 0 ] \
+            || { echo "::error::both apps skipped — nothing to publish"; exit 1; }
+          matrix=$(printf '%s\n' "${entries[@]}" | python3 -c \
+            'import json,sys;print(json.dumps([json.loads(l) for l in sys.stdin]))')
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  build-publish:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    name: build-publish (${{ matrix.app }})
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          # No git use after checkout, and `.` is the podman build context —
+          # never leave the token in .git/config where a future COPY/ADD of
+          # the context could bake it into an image layer.
+          persist-credentials: false
+
+      - name: Install podman and arm64 emulation
+        # Distro packages, not third-party actions/images: qemu-user-static
+        # registers the binfmt_misc handlers buildah needs for the arm64 leg
+        # (WAR mode runs no compiler under emulation, so the qemu cost is
+        # only the runtime stage's apt/unzip steps), and podman is installed
+        # explicitly rather than assumed from the runner image so the
+        # workflow stays self-contained across runner image changes.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends podman qemu-user-static
+          podman version
+
+      - name: Build per-arch images and smoke-test before any push
+        env:
+          APP: ${{ matrix.app }}
+          ARG_PREFIX: ${{ matrix.arg_prefix }}
+          CONTAINERFILE: ${{ matrix.containerfile }}
+          WEBAPP: ${{ matrix.webapp }}
+          APP_TAG: ${{ matrix.app_tag }}
+          APP_COMMIT: ${{ matrix.commit }}
+          WAR_URL: ${{ matrix.war_url }}
+          WAR_SHA256: ${{ matrix.war_sha256 }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          set -euo pipefail
+          imm_tag="${APP_TAG}-r${REBUILD}"
+          # --format docker, --no-cache: same flags carlos-ctl build uses and
+          # for the same reasons (OCI format drops HEALTHCHECK; a cached
+          # `ADD <url>` ships stale artifacts) — see carlos_ctl/build.py.
+          args=(
+            --no-cache --format docker -f "$CONTAINERFILE"
+            --build-arg "${ARG_PREFIX}_WAR_URL=${WAR_URL}"
+            --build-arg "${ARG_PREFIX}_WAR_SHA256=${WAR_SHA256}"
+            --build-arg "${ARG_PREFIX}_WAR_STAGE=download"
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}"
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            --label "org.opencontainers.image.version=${imm_tag}"
+            --label "org.carlos-emr.app-version=${APP_TAG}"
+            --label "org.carlos-emr.app-commit=${APP_COMMIT}"
+            --label "org.carlos-emr.war-sha256=${WAR_SHA256}"
+          )
+          # CARLOS_BUILD_STAMP only exists in the carlos Containerfile.
+          if [ "$ARG_PREFIX" = "CARLOS" ]; then
+            args+=(--build-arg "CARLOS_BUILD_STAMP=${imm_tag}")
+          fi
+          for arch in amd64 arm64; do
+            podman build "${args[@]}" --arch "$arch" \
+              -t "localhost/publish-${APP}:${arch}" .
+            # The exact promotion smoke carlos-ctl build runs, per arch (the
+            # arm64 leg executes under qemu): the webapp tree must exist and
+            # the image must run at all.
+            podman run --rm --entrypoint /usr/bin/test \
+              "localhost/publish-${APP}:${arch}" \
+              -d "/usr/local/tomcat/webapps/${WEBAPP}/WEB-INF"
+            podman run --rm --entrypoint /bin/true "localhost/publish-${APP}:${arch}"
+          done
+          podman manifest create "localhost/publish-${APP}-list"
+          podman manifest add "localhost/publish-${APP}-list" \
+            "containers-storage:localhost/publish-${APP}:amd64"
+          podman manifest add "localhost/publish-${APP}-list" \
+            "containers-storage:localhost/publish-${APP}:arm64"
+
+      - name: Push manifest list (immutable -rN, then the mutable alias)
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP: ${{ matrix.app }}
+          IMAGE: ${{ matrix.image }}
+          APP_TAG: ${{ matrix.app_tag }}
+          REBUILD: ${{ inputs.rebuild }}
+        run: |
+          set -euo pipefail
+          imm_tag="${APP_TAG}-r${REBUILD}"
+          podman login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin <<<"${GH_TOKEN}"
+          # attest-build-provenance's push-to-registry reads Docker-config
+          # credentials, which podman login does not write — log in with both.
+          docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin <<<"${GH_TOKEN}"
+          # v2s2 list to match the docker-format per-arch images.
+          podman manifest push --all --format v2s2 \
+            --digestfile /tmp/digest-imm "localhost/publish-${APP}-list" \
+            "docker://${IMAGE}:${imm_tag}"
+          d1=$(cat /tmp/digest-imm)
+          [[ "$d1" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::push of ${IMAGE}:${imm_tag} produced no valid digest ('${d1}') — refusing to alias/attest"; exit 1; }
+          podman manifest push --all --format v2s2 \
+            --digestfile /tmp/digest-alias "localhost/publish-${APP}-list" \
+            "docker://${IMAGE}:${APP_TAG}"
+          d2=$(cat /tmp/digest-alias)
+          [ "$d1" = "$d2" ] \
+            || { echo "::error::alias ${IMAGE}:${APP_TAG} digest ${d2} != immutable ${imm_tag} digest ${d1}"; exit 1; }
+          echo "digest=${d1}" >> "$GITHUB_OUTPUT"
+          echo "imm_tag=${imm_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-name: ${{ matrix.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish the pin block to the run summary
+        env:
+          IMAGE: ${{ matrix.image }}
+          APP_TAG: ${{ matrix.app_tag }}
+          IMM_TAG: ${{ steps.push.outputs.imm_tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          ARG_PREFIX: ${{ matrix.arg_prefix }}
+          APP_COMMIT: ${{ matrix.commit }}
+          WAR_SHA256: ${{ matrix.war_sha256 }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${IMAGE}:${IMM_TAG}"
+            echo
+            echo '```'
+            echo "pull (digest-pinned):   podman pull ${IMAGE}@${DIGEST}"
+            echo "manual pin env lines:   ${ARG_PREFIX}_REF=${APP_TAG}"
+            echo "                        ${ARG_PREFIX}_ARTIFACT=image"
+            echo "                        ${ARG_PREFIX}_IMAGE_DIGEST=${DIGEST}"
+            echo "app commit:             ${APP_COMMIT}"
+            echo "war sha256:             ${WAR_SHA256}"
+            echo '```'
+            echo
+            echo "Verify: \`gh attestation verify oci://${IMAGE}:${IMM_TAG} --owner ${GITHUB_REPOSITORY_OWNER}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
