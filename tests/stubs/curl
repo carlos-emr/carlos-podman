@@ -27,6 +27,10 @@
 #   STUB_GH_DR_RELEASES=full|none  what the drugref2026 release list answers
 #                      (default full: one non-prerelease with the fixed-name
 #                      drugref2.war asset + digest, modelling live v1.0.0rc2)
+#   STUB_GHCR_DOWN=1   ghcr.io becomes unreachable (exit 7) — image-artifact
+#                      digest resolution must refuse with guidance
+#   STUB_GHCR_MISSING=1  the manifest HEAD 404s (exit 22) — release published
+#                      but no image pushed for it yet
 echo "curl $*" >> "${STUBLOG:-/dev/null}"
 
 # When the caller passes the URL off-argv via `-K -` (config on stdin), real
@@ -56,6 +60,28 @@ fi
 # release-first resolution is testable end to end — for BOTH app repos. The
 # commit and WAR sha256 values are fixed test constants the suite's
 # assertions grep for (carlos commit 1111…, drugref commit 3333…).
+# ghcr.io (carlos_ctl.source resolve_image_digest): anonymous token + manifest
+# HEAD. The digest constant is what the image-artifact assertions grep for.
+GHCR_DIGEST="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+if [[ "$url" == https://ghcr.io/token* ]]; then
+    [[ -n "${STUB_GHCR_DOWN:-}" ]] && exit 7
+    echo '{"token":"stub-registry-token"}'
+    exit 0
+fi
+if [[ "$url" == https://ghcr.io/v2/*/manifests/* ]]; then
+    [[ -n "${STUB_GHCR_DOWN:-}" ]] && exit 7
+    [[ -n "${STUB_GHCR_MISSING:-}" ]] && exit 22
+    # Model the real ghcr: the unauthenticated HEAD answers a 401 Bearer
+    # challenge naming the token realm; the authorized retry gets the digest.
+    if [[ " $* " == *"Authorization: Bearer "* ]]; then
+        printf 'HTTP/2 200\ndocker-content-digest: %s\ncontent-length: 3\n' "$GHCR_DIGEST"
+    else
+        repo_path="${url#https://ghcr.io/v2/}"; repo_path="${repo_path%%/manifests/*}"
+        printf 'HTTP/2 401\nwww-authenticate: Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:%s:pull"\n' "$repo_path"
+    fi
+    exit 0
+fi
+
 GH_SHA="1111111111111111111111111111111111111111"
 GH_WAR_SHA="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 GH_DR_SHA="3333333333333333333333333333333333333333"

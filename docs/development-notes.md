@@ -39,7 +39,11 @@ is safer than changing those values in place.
 Rootless Podman keeps its image and container storage under the invoking user.
 An image built by one account is not available to another account, including
 root. Run the build, setup helper, `podman kube play`, and later Podman commands
-as the same non-root user.
+as the same non-root user. The same applies to prebuilt-image pulls
+(`<APP>_ARTIFACT=image`): the pulled layers land in the pulling user's store,
+which is why same-service-user sibling instances must agree on
+`carlos_image_repo`/`carlos_drugref_image_repo` (the provisioning assert
+enforces it) just as they must on the image tags.
 
 A rootless service managed by the user's systemd manager may need that manager
 to remain available after logout. Enable lingering for the account when testing

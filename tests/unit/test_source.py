@@ -845,3 +845,222 @@ class TestUnreadablePinWarns:
     def test_an_absent_pin_stays_silent(self, mk_runner, capsys) -> None:
         assert read_pin(mk_runner(), CARLOS) is None
         assert capsys.readouterr().err == ""
+
+
+_IMG_DIGEST = "sha256:" + "e" * 64
+
+
+def _ghcr(r, *, tag=None, digest=_IMG_DIGEST, repo="carlos-emr/carlos-app"):
+    """Script the ghcr endpoints resolve_image_digest touches, modelling the
+    real registry's behavior: the unauthenticated manifest HEAD answers a 401
+    Bearer challenge; the token realm grants an anonymous pull token; the
+    authorized retry carries the digest header."""
+    # Insertion order matters for the FakeRunner substring match: the
+    # authorized retry's argv contains BOTH the bearer token and the manifest
+    # URL, so the more specific script must come first.
+    r.script(
+        "Authorization: Bearer anon-token",
+        out=f"HTTP/2 200\nDocker-Content-Digest: {digest}\ncontent-length: 3\n",
+    )
+    r.script("ghcr.io/token", out=json.dumps({"token": "anon-token"}))
+    path = f"ghcr.io/v2/{repo}/manifests/" + (tag or "")
+    r.script(path, out=(
+        'HTTP/2 401\nWww-Authenticate: Bearer realm="https://ghcr.io/token",'
+        f'service="ghcr.io",scope="repository:{repo}:pull"\n'
+    ))
+
+
+class TestImageArtifact:
+    """<APP>_ARTIFACT=image: the opt-in prebuilt-image mode. The stakes: the
+    digest recorded here is the ONLY integrity anchor of what a PHI host will
+    run — a pin without it, or a silently wrong one, defeats the entire
+    tag-for-humans/digest-for-trust model."""
+
+    def test_image_pin_round_trips(self, mk_runner) -> None:
+        r = mk_runner()
+        pin = SourcePin(
+            ref=_SHA, kind="prerelease", tag="2026.08.0-alpha2", commit=_SHA,
+            artifact="image", image_ref="ghcr.io/carlos-emr/carlos-app:2026.08.0-alpha2",
+            image_digest=_IMG_DIGEST,
+        )
+        write_pin(r, CARLOS, pin, implicit=False)
+        got = read_pin(r, CARLOS)
+        assert got is not None
+        assert (got.artifact, got.image_ref, got.image_digest) == (
+            "image", pin.image_ref, pin.image_digest)
+
+    @pytest.mark.parametrize("bad", ["", "e" * 64, "sha256:" + "e" * 63, "sha256:xyz"])
+    def test_image_pin_without_valid_digest_degrades(self, mk_runner, capsys, bad) -> None:
+        # An image pin that cannot be pulled-by-digest must degrade to
+        # re-resolve exactly like a WAR pin missing its sha256 — never crash,
+        # never pull by mutable tag.
+        r = mk_runner()
+        write_pin(r, CARLOS, SourcePin(
+            ref=_SHA, kind="release", tag="t", commit=_SHA, artifact="image",
+            image_ref="ghcr.io/carlos-emr/carlos-app:t", image_digest=bad,
+        ), implicit=False)
+        assert read_pin(r, CARLOS) is None
+        assert "implausible" in capsys.readouterr().err
+
+    def test_resolve_image_digest_happy_path(self, mk_runner) -> None:
+        r = mk_runner()
+        _ghcr(r, tag="2026.08.0")
+        got = source_mod.resolve_image_digest(
+            r, "ghcr.io/carlos-emr/carlos-app", "2026.08.0")
+        assert got == _IMG_DIGEST
+        # Every manifest probe must be a HEAD (-I): the digest header is the
+        # answer, the body is never needed. The first probe is deliberately
+        # NOT -f (a 401 must still yield its challenge headers).
+        head_calls = [c for c in r.calls if any("manifests" in a for a in c)]
+        assert len(head_calls) == 2
+        assert "-sSI" in head_calls[0] and "-fsSI" in head_calls[1]
+        # The token came from the ADVERTISED realm, not a hardcoded endpoint.
+        assert any("ghcr.io/token?service=ghcr.io" in a for c in r.calls for a in c)
+
+    def test_resolve_image_digest_failures_return_empty(self, mk_runner) -> None:
+        # Unreachable registry (nothing scripted -> empty curl output).
+        r = mk_runner()
+        assert source_mod.resolve_image_digest(r, "ghcr.io/x/y", "t") == ""
+        # Token ok but manifest HEAD fails (404 -> curl -f rc 22, no output).
+        r2 = mk_runner()
+        r2.script("ghcr.io/token", out=json.dumps({"token": "anon"}))
+        r2.script("ghcr.io/v2/x/y/manifests/t", rc=22, out="")
+        assert source_mod.resolve_image_digest(r2, "ghcr.io/x/y", "t") == ""
+        # Malformed digest header is refused, not propagated.
+        r3 = mk_runner()
+        r3.script("ghcr.io/token", out=json.dumps({"token": "anon"}))
+        r3.script("ghcr.io/v2/x/y/manifests/t",
+                  out="docker-content-digest: sha256:notahexdigest\n")
+        assert source_mod.resolve_image_digest(r3, "ghcr.io/x/y", "t") == ""
+
+    def test_resolve_image_digest_anonymous_registry_skips_the_token_dance(self, mk_runner) -> None:
+        # A mirror that answers the unauthenticated HEAD outright needs no
+        # token round-trip at all.
+        r = mk_runner()
+        r.script("mirror.internal/v2/x/y/manifests/t",
+                 out=f"HTTP/2 200\ndocker-content-digest: {_IMG_DIGEST}\n")
+        assert source_mod.resolve_image_digest(r, "mirror.internal/x/y", "t") == _IMG_DIGEST
+        assert not any("token" in a for c in r.calls for a in c)
+
+    def test_resolve_image_digest_follows_the_advertised_realm(self, mk_runner) -> None:
+        # A non-ghcr mirror advertising its own bearer realm and answering
+        # with access_token (both allowed by the distribution spec).
+        r = mk_runner()
+        r.script("Authorization: Bearer mirror-tok",
+                 out=f"HTTP/2 200\ndocker-content-digest: {_IMG_DIGEST}\n")
+        r.script("auth.mirror.internal/grant", out=json.dumps({"access_token": "mirror-tok"}))
+        r.script("mirror.internal/v2/x/y/manifests/t", out=(
+            'HTTP/2 401\nWWW-Authenticate: Bearer realm="https://auth.mirror.internal/grant",'
+            'service="mirror.internal"\n'
+        ))
+        assert source_mod.resolve_image_digest(r, "mirror.internal/x/y", "t") == _IMG_DIGEST
+        assert any("auth.mirror.internal/grant?service=mirror.internal" in a
+                   for c in r.calls for a in c)
+
+    def test_resolve_image_digest_refuses_a_plaintext_realm(self, mk_runner) -> None:
+        r = mk_runner()
+        r.script("mirror.internal/v2/x/y/manifests/t", out=(
+            'HTTP/2 401\nWWW-Authenticate: Bearer realm="http://evil.example/token"\n'
+        ))
+        assert source_mod.resolve_image_digest(r, "mirror.internal/x/y", "t") == ""
+
+    def test_image_repo_with_tag_or_digest_is_refused(self, mk_runner) -> None:
+        for bad in ("ghcr.io/x/y:latest", "ghcr.io/x/y@sha256:" + "e" * 64, "",
+                    "ghcr.io"):
+            r = mk_runner(f"CARLOS_ARTIFACT=image\nCARLOS_IMAGE_REPO={bad}\n"
+                          f"CARLOS_IMAGE_DIGEST={'e' * 64}\nCARLOS_REF=sometag\n")
+            with pytest.raises(CtlError, match="bare registry repository"):
+                resolve_for_build(r, CARLOS)
+
+    def test_policy_resolve_under_image_records_digest_and_keeps_war(self, mk_runner) -> None:
+        tag = "2026.08.0"
+        r = mk_runner("CARLOS_ARTIFACT=image\n")
+        _gh(r, [_rel(tag, assets=_war_assets(tag))])
+        _ghcr(r, tag=tag)
+        pin = resolve_policy(r, CARLOS)
+        assert pin.artifact == "image"
+        assert pin.image_ref == f"ghcr.io/carlos-emr/carlos-app:{tag}"
+        assert pin.image_digest == _IMG_DIGEST
+        # The WAR url+sha ride along so flipping <APP>_ARTIFACT back to
+        # war/auto later stays offline (the forced-source contract's twin).
+        assert pin.war_url and pin.war_sha256 == _WAR_SHA
+
+    def test_missing_published_image_refuses_with_guidance(self, mk_runner) -> None:
+        tag = "2026.08.0"
+        r = mk_runner("CARLOS_ARTIFACT=image\n")
+        _gh(r, [_rel(tag, assets=_war_assets(tag))])
+        # ghcr endpoints not scripted -> no digest resolvable.
+        with pytest.raises(CtlError, match="no published image .*Publish Images"):
+            resolve_policy(r, CARLOS)
+
+    def test_branch_fallback_refuses_image(self, mk_runner) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=image\n")
+        _gh(r, [])
+        with pytest.raises(CtlError, match="cannot be satisfied from a branch"):
+            resolve_policy(r, CARLOS)
+
+    def test_manual_ref_image_requires_explicit_digest(self, mk_runner) -> None:
+        r = mk_runner("CARLOS_REF=2026.08.0\nCARLOS_ARTIFACT=image\n")
+        with pytest.raises(CtlError, match="CARLOS_IMAGE_DIGEST"):
+            resolve_for_build(r, CARLOS)
+
+    def test_manual_ref_image_is_offline_and_normalizes_bare_hex(self, mk_runner) -> None:
+        r = mk_runner(
+            "CARLOS_REF=2026.08.0\nCARLOS_ARTIFACT=image\n"
+            f"CARLOS_IMAGE_DIGEST={'e' * 64}\n"
+        )
+        pin = resolve_for_build(r, CARLOS)
+        assert pin.artifact == "image" and pin.kind == "manual"
+        assert pin.image_digest == _IMG_DIGEST
+        assert pin.image_ref == "ghcr.io/carlos-emr/carlos-app:2026.08.0"
+        assert not _api_calls(r)  # the air-gap channel never touches the network
+
+    def test_forced_image_on_a_pin_without_digest_refuses(self, mk_runner) -> None:
+        # A pin resolved before the flip carries no digest — the only honest
+        # path is a re-resolve, said explicitly (never a tag pull).
+        r = mk_runner("CARLOS_ARTIFACT=image\n")
+        write_pin(r, CARLOS, SourcePin(
+            ref=_SHA, kind="release", tag="2026.08.0", commit=_SHA, artifact="source",
+        ), implicit=False)
+        with pytest.raises(CtlError, match="carries no image digest.*source update"):
+            resolve_for_build(r, CARLOS)
+
+    def test_forced_image_on_a_pin_with_digest_overrides_for_the_run(self, mk_runner) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=image\n")
+        write_pin(r, CARLOS, SourcePin(
+            ref=_SHA, kind="release", tag="t", commit=_SHA, artifact="war",
+            war_url="https://x/y.war", war_sha256=_WAR_SHA,
+            image_ref="ghcr.io/carlos-emr/carlos-app:t", image_digest=_IMG_DIGEST,
+        ), implicit=False)
+        pin = resolve_for_build(r, CARLOS)
+        assert pin.artifact == "image"
+        assert not _api_calls(r)
+
+    def test_source_set_release_with_artifact_image(self, mk_runner) -> None:
+        tag = "2026.08.0"
+        r = mk_runner()
+        _gh(r, [_rel(tag, assets=_war_assets(tag))])
+        _ghcr(r, tag=tag)
+        assert cmd_source(r, ["set", tag, "--artifact", "image"]) == 0
+        pin = read_pin(r, CARLOS)
+        assert pin is not None and pin.artifact == "image"
+        assert pin.image_digest == _IMG_DIGEST
+
+    def test_source_set_sha_with_artifact_image_refuses(self, mk_runner) -> None:
+        r = mk_runner()
+        with pytest.raises(CtlError, match="prebuilt image"):
+            cmd_source(r, ["set", "f" * 40, "--artifact", "image"])
+
+    def test_source_set_branch_with_artifact_image_refuses(self, mk_runner) -> None:
+        r = mk_runner()
+        _gh(r, [])
+        with pytest.raises(CtlError, match="--artifact image needs a release"):
+            cmd_source(r, ["set", "develop", "--artifact", "image"])
+
+    def test_show_warns_when_forced_image_lacks_a_digest(self, mk_runner, capsys) -> None:
+        r = mk_runner("CARLOS_ARTIFACT=image\n")
+        write_pin(r, CARLOS, SourcePin(
+            ref=_SHA, kind="release", tag="t", commit=_SHA, artifact="source",
+        ), implicit=False)
+        assert cmd_source(r, ["show"]) == 0
+        assert "builds will REFUSE" in capsys.readouterr().err

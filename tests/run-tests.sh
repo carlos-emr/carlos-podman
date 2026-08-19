@@ -507,6 +507,49 @@ assert "both pin files are gone" \
     bash -c "! test -e '$HSRC/build/.source-pin' && ! test -e '$HSRC/build/.source-pin.drugref'"
 refute "source rejects unknown sub-verbs" ctl "$HSRC" source frobnicate
 
+# Prebuilt-image artifact (<APP>_ARTIFACT=image, OPT-IN): the pin records the
+# registry digest at resolve time; `build` then PULLS by that digest (never
+# builds, never trusts a tag) and promotes through the same
+# :build-<stamp>/:previous/:latest machinery — mixed war/image pairs included.
+HIMG="$WORK/h-image"; mk_home "$HIMG"
+touch "$HIMG/build/Containerfile" "$HIMG/build/Containerfile.drugref"
+printf 'CARLOS_ARTIFACT=image\nDRUGREF_ARTIFACT=image\n' >> "$HIMG/container/carlos-app.env"
+m=$(mark)
+assert "an image-artifact build resolves, pins the digest, pulls and promotes" \
+    ctl "$HIMG" build
+assert "the pin records the registry digest" \
+    grep -q '"image_digest": "sha256:eeee' "$HIMG/build/.source-pin"
+assert "the image is pulled BY DIGEST (never by mutable tag)" \
+    log_since "$m" "pull ghcr.io/carlos-emr/carlos-app@sha256:eeee"
+assert "the DrugRef image is pulled by digest too" \
+    log_since "$m" "pull ghcr.io/carlos-emr/carlos-drugref@sha256:eeee"
+refute "an image-mode build never runs podman build" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q 'podman build'"
+assert "the pulled image is promoted to :latest via :build-<stamp>" \
+    log_since "$m" "localhost/carlos-app:latest"
+m=$(mark)
+assert "a PINNED image build works fully offline (API and registry down)" \
+    ctle "$HIMG" STUB_GH_DOWN=1 STUB_GHCR_DOWN=1 -- build
+refute "the pinned image build touched no API or registry endpoint" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -Eq 'api.github.com|ghcr.io/(token|v2)'"
+refute "a pull failure aborts BEFORE any tag moves" \
+    ctle "$HIMG" STUB_PULL_FAIL=1 -- build
+refute "the failed pull moved no :previous/:latest tag" \
+    bash -c "tail -n 6 '$STUBLOG' | grep -q ':previous'"
+assert "rollback works after an image-mode build" ctl "$HIMG" rollback
+# Release published but its image not pushed yet: refuse with the
+# publish-images guidance, never silently fall back to another artifact.
+HIMG2="$WORK/h-image-missing"; mk_home "$HIMG2"
+touch "$HIMG2/build/Containerfile" "$HIMG2/build/Containerfile.drugref"
+printf 'CARLOS_ARTIFACT=image\n' >> "$HIMG2/container/carlos-app.env"
+refute "a release without a published image refuses to pin" \
+    ctle "$HIMG2" STUB_GHCR_MISSING=1 -- build
+assert "the refusal names the Publish Images workflow" \
+    bash -c "cd '$ROOT' && STUB_GHCR_MISSING=1 EMR_HOME='$HIMG2' \
+        python3 -m carlos_ctl.cli build 2>&1 | grep -q 'Publish Images'"
+refute "no half-pinned pair is left behind by the refusal" \
+    test -e "$HIMG2/build/.source-pin"
+
 # Rollback schema-compatibility guard: rolling the CODE back never reverses
 # hand-applied SQL migrations. play records the live schema fingerprint,
 # build pairs it with :previous, and rollback refuses on a mismatch unless

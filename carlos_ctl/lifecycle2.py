@@ -919,8 +919,8 @@ def cmd_play(runner: Runner, args: List[str]) -> int:
             warn(
                 "the installed images were NOT built under CARLOS_BUILD_MODE=release — "
                 "for production, rebuild with it (per app: a source-compiled app needs "
-                "its 40-hex ref + *_SRC_SHA256; a WAR-artifact app needs its pinned "
-                "WAR sha256)"
+                "its 40-hex ref + *_SRC_SHA256; a WAR-artifact app needs its pinned WAR "
+                "sha256; a prebuilt-image app is digest-pinned by construction)"
             )
     yamls = [s.rendered_yaml, s.rendered_waf_yaml] + (
         [s.rendered_obs_yaml] if s.obs_enabled else []

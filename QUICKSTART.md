@@ -137,6 +137,21 @@ curl -s https://api.github.com/repos/carlos-emr/carlos/releases \
   | grep -E '"(tag_name|prerelease)"'
 ```
 
+**Path 0 — pull the prebuilt image (fastest, no build at all).** Each app
+release also gets a prebuilt multi-arch image on ghcr.io (published by this
+repo's *Publish Images* workflow). Pull it **by digest** (printed in that
+workflow's run summary, or resolved from the tag) and tag it as the local
+image the pod deploys:
+
+```bash
+podman pull ghcr.io/carlos-emr/carlos-app@sha256:<digest>
+podman tag  ghcr.io/carlos-emr/carlos-app@sha256:<digest> localhost/carlos-app:latest
+```
+
+Under the full deployment this is `<APP>_ARTIFACT=image` — see the README's
+"Prebuilt images" subsection for the trust model and air-gap channel. To
+build locally instead:
+
 **Path A — a release publishes a WAR (preferred).** Record its tag, source
 commit, and the WAR's sha256 (from the sibling `.war.sha256` asset), then
 build with the download stage:

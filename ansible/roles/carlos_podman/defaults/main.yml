@@ -296,8 +296,10 @@ carlos_ref: auto
 # Artifact for the selected version: `auto` uses the release's published WAR
 # when one exists (sha256-verified in-image, no Maven compile — CARLOS
 # releases ship carlos-<tag>.war, DrugRef releases ship drugref2.war), else
-# compiles that release's source; `war`/`source` force one side. The choice
-# made under `auto` is persisted in the source pin.
+# compiles that release's source; `war`/`source` force one side; `image`
+# (OPT-IN only — auto never selects it) pulls the release's prebuilt
+# multi-arch image from carlos_image_repo by digest instead of building
+# locally. The choice made under `auto` is persisted in the source pin.
 carlos_artifact: auto
 # The no-releases fallback branch for `auto` resolution: `main` is the app
 # repo's stable branch (`develop` is promoted into it for release).
@@ -309,6 +311,13 @@ carlos_source_branch: main
 carlos_drugref_ref: auto
 carlos_drugref_artifact: auto
 carlos_drugref_source_branch: master
+# Registry repositories for the prebuilt images (<app>_artifact: image) —
+# repo only, no :tag/@digest (the tag comes from the pinned release; the
+# digest is resolved at pin time and recorded in the source pin, and every
+# pull verifies it). Override to consume from an internal registry mirror
+# (air-gapped sites). Published by carlos-podman's 'Publish Images' workflow.
+carlos_image_repo: ghcr.io/carlos-emr/carlos-app
+carlos_drugref_image_repo: ghcr.io/carlos-emr/carlos-drugref
 
 # --- credentials ------------------------------------------------------------------
 # REQUIRED for provisioning (renders carlos.properties and the db secret).

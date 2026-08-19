@@ -488,3 +488,32 @@ def test_every_host_path_setting_is_redirected(mk_settings) -> None:
         "their CARLOS_*_DIR knob to _HERMETIC_DIR_KNOBS (and to Settings if it "
         f"has none): {', '.join(escaped)}"
     )
+
+
+class TestImageRepoKeys:
+    """The prebuilt-image keys registered in PR 2: the repos are real
+    defaults, the manual digests are known extra keys — none may trip the
+    unknown-key warning, and none may end in _IMAGE (the digest-pin warning's
+    suffix match)."""
+
+    def test_image_repo_defaults_and_digest_keys_are_known(self, tmp_path: Path, capsys) -> None:
+        home = tmp_path / "emr"
+        (home / "container").mkdir(parents=True)
+        (home / "container" / "carlos-app.env").write_text(
+            "CARLOS_IMAGE_REPO=ghcr.io/example/carlos-app\n"
+            "DRUGREF_IMAGE_REPO=ghcr.io/example/carlos-drugref\n"
+            "CARLOS_IMAGE_DIGEST=" + "e" * 64 + "\n"
+            "DRUGREF_IMAGE_DIGEST=sha256:" + "e" * 64 + "\n"
+        )
+        s = Settings({"EMR_HOME": str(home)})
+        assert s.get("CARLOS_IMAGE_REPO") == "ghcr.io/example/carlos-app"
+        assert "does not read" not in capsys.readouterr().err
+
+    def test_no_image_repo_key_ends_in_image_suffix(self) -> None:
+        # Regression pin for the validate.py trap: keys ending in _IMAGE are
+        # expected to carry @sha256: digests; the repo-only keys must not.
+        from carlos_ctl.config import _DEFAULTS
+
+        for key in ("CARLOS_IMAGE_REPO", "DRUGREF_IMAGE_REPO"):
+            assert key in _DEFAULTS
+            assert not key.endswith("_IMAGE")

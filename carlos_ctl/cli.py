@@ -31,7 +31,7 @@ APP LIFECYCLE (images + pod processes only — never db/documents/backups):
                         newest GitHub release (published WAR preferred, else
                         source compile) on the FIRST build and PINS it — later
                         builds stay on the pins until 'source update'
-  source [show|update|set [--drugref] <ref> [--artifact war|source]|clear]
+  source [show|update|set [--drugref] <ref> [--artifact war|source|image]|clear]
                         show/refresh/pin which CARLOS + DrugRef versions and
                         artifacts builds use
   rebuild [--ref <ref>] [--drugref-ref <ref>] [--pull]   build fresh images and

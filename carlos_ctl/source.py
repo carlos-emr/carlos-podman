@@ -27,6 +27,14 @@ and its own pin:
   persisted in the pin. WAR asset naming differs per repo: CARLOS releases
   ship `carlos-<tag>.war`, DrugRef releases ship a fixed-name
   `drugref2.war` — each app lists its accepted names.
+- <APP>_ARTIFACT=image (OPT-IN only — auto never selects it) skips the
+  local build entirely: the pinned release's PREBUILT image (published by
+  carlos-podman's publish-images workflow to <APP>_IMAGE_REPO) is pulled by
+  its manifest-list DIGEST, resolved from the registry at pin time and
+  recorded in the pin — the tag is for humans, the digest is the trust
+  anchor, exactly like every third-party repo:tag@sha256: pin in this repo.
+  Images hang off releases only (no branch/bare-sha image pins); a manual
+  <APP>_REF needs an explicit <APP>_IMAGE_DIGEST (the air-gap channel).
 
 Pins record the release tag AND its commit SHA: tags are mutable refs, so
 nothing downstream trusts one — source builds fetch archive/<sha>.tar.gz
@@ -48,18 +56,20 @@ import re
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import quote
 
 from .runner import Runner
 from .util import CtlError, atomic_write, log, warn
 
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _USAGE = (
     "usage: carlos-ctl source [show]\n"
     "       carlos-ctl source update\n"
     "       carlos-ctl source set [--drugref] <release-tag|branch|40-hex-sha> "
-    "[--artifact war|source]\n"
+    "[--artifact war|source|image]\n"
     "       carlos-ctl source clear"
 )
 
@@ -109,9 +119,14 @@ class SourcePin:
     tag: str = ""        # release tag ("" for branch/manual pins)
     branch: str = ""     # branch name ("" unless kind == "branch")
     commit: str = ""     # 40-hex sha when known
-    artifact: str = "source"   # "war" | "source"
+    artifact: str = "source"   # "war" | "source" | "image"
     war_url: str = ""
     war_sha256: str = ""
+    # Prebuilt-image pins (artifact == "image"): the tag the digest was
+    # discovered through (display/audit) and the manifest-list digest —
+    # the sole trust anchor `podman pull <repo>@<digest>` verifies.
+    image_ref: str = ""
+    image_digest: str = ""     # sha256:<64-hex>
     resolved_at: str = ""      # UTC ISO8601
     policy: str = "auto"       # "auto" | "manual" (how this pin was chosen)
 
@@ -123,7 +138,10 @@ class SourcePin:
             "branch": f"branch {self.branch} HEAD",
             "manual": f"ref {self.ref}",
         }.get(self.kind, f"ref {self.ref}")
-        how = "published WAR" if self.artifact == "war" else "source compile"
+        how = {
+            "war": "published WAR",
+            "image": "prebuilt image",
+        }.get(self.artifact, "source compile")
         commit = f" @ {self.commit[:12]}" if self.commit else ""
         return f"{what}{commit} ({how})"
 
@@ -168,6 +186,8 @@ def read_pin(runner: Runner, app: AppSource) -> Optional[SourcePin]:
             artifact=str(data.get("artifact", "source")),
             war_url=str(data.get("war_url", "")),
             war_sha256=str(data.get("war_sha256", "")),
+            image_ref=str(data.get("image_ref", "")),
+            image_digest=str(data.get("image_digest", "")),
             resolved_at=str(data.get("resolved_at", "")),
             policy=str(data.get("policy", "auto")),
         )
@@ -186,9 +206,15 @@ def read_pin(runner: Runner, app: AppSource) -> Optional[SourcePin]:
     if (
         not _SHA40.match(pin.ref)
         or pin.kind not in ("release", "prerelease", "branch", "manual")
-        or pin.artifact not in ("war", "source")
+        or pin.artifact not in ("war", "source", "image")
         or (pin.artifact == "war"
             and not (pin.war_url and _SHA256_HEX.match(pin.war_sha256)))
+        # An image pin without its digest cannot honor the trust contract
+        # (pulls verify the digest, nothing else) — degrade like a WAR pin
+        # missing its sha256. Older CLIs reject the unknown artifact value
+        # the same way and safely re-resolve.
+        or (pin.artifact == "image"
+            and not (pin.image_ref and _IMAGE_DIGEST.match(pin.image_digest)))
     ):
         warn(
             f"{path} carries an incomplete or implausible source pin — ignoring it; "
@@ -326,6 +352,104 @@ def detect_war_asset(runner: Runner, app: AppSource, release: dict, tag: str) ->
     return "", ""
 
 
+def _image_repo(runner: Runner, app: AppSource) -> str:
+    """<APP>_IMAGE_REPO with any accidental :tag/@digest suffix refused —
+    the repo is combined with the pinned release tag and the resolved
+    digest; a value already carrying either would build a garbage ref."""
+    value = runner.settings.get(f"{app.prefix}_IMAGE_REPO").strip().rstrip("/")
+    # A colon after the last slash is a tag separator (registry ports sit
+    # before a slash: reg:5000/x is fine, ghcr.io/x:latest is not). A value
+    # with no slash at all is a bare host — fail fast here with the intended
+    # guidance instead of a later, less direct "no published image".
+    tail = value.rsplit("/", 1)[-1]
+    if not value or "/" not in value or "@" in value or ":" in tail:
+        raise CtlError(
+            f"{app.prefix}_IMAGE_REPO='{value}' must be a bare registry repository "
+            f"(host/namespace/name — no :tag, no @digest); the tag comes from the "
+            f"pinned release and the digest from the registry at pin time"
+        )
+    return value
+
+
+def _header_value(raw: str, name: str) -> str:
+    """The (last) value of one HTTP response header from curl -I output,
+    matched case-insensitively; '' when absent."""
+    found = ""
+    for line in raw.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip().lower() == name:
+            found = value.strip()
+    return found
+
+
+def resolve_image_digest(runner: Runner, image_repo: str, tag: str) -> str:
+    """The manifest-list digest of <image_repo>:<tag> via the OCI
+    distribution API, or '' on any failure. The docker-content-digest header
+    is the exact value `podman pull <repo>@sha256:...` verifies — for the
+    multi-arch lists the publish workflow pushes, that is the LIST digest,
+    which resolves the right per-arch image on every host. Same Runner+curl
+    boundary as the GitHub API calls, so both test suites stub one seam.
+
+    Auth follows the distribution spec's challenge flow, so a configured
+    mirror works like ghcr does: an unauthenticated HEAD first (an anonymous
+    registry answers the digest outright); on a Bearer challenge, fetch a
+    pull token from the ADVERTISED realm (never a hardcoded endpoint,
+    accepting `token` or `access_token`) and retry with it."""
+    host, _, path = image_repo.partition("/")
+    if not host or not path:
+        return ""
+    # HEAD, not GET: only the digest header is needed, never the manifest
+    # body. Every list+manifest media type is accepted so the registry
+    # answers with the canonical digest of whatever it stores.
+    accept = (
+        "Accept: application/vnd.oci.image.index.v1+json, "
+        "application/vnd.docker.distribution.manifest.list.v2+json, "
+        "application/vnd.oci.image.manifest.v1+json, "
+        "application/vnd.docker.distribution.manifest.v2+json"
+    )
+    url = f"https://{host}/v2/{path}/manifests/{tag}"
+    # Probe WITHOUT -f: a 401 must still yield its headers — they carry the
+    # WWW-Authenticate challenge that names the token realm.
+    out = runner.output([
+        "curl", "-sSI", "--max-time", "20", "-H", accept, url,
+    ], timeout=30)
+    digest = _header_value(out, "docker-content-digest").lower()
+    if _IMAGE_DIGEST.match(digest):
+        return digest
+    challenge = _header_value(out, "www-authenticate")
+    if not challenge.lower().startswith("bearer"):
+        return ""
+    fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+    realm = fields.get("realm", "")
+    if not realm.startswith("https://"):
+        # Never chase a plaintext (or garbage) token endpoint: the token
+        # gates nothing secret here, but an http realm is a broken or
+        # hostile registry either way.
+        return ""
+    service = quote(fields.get("service", host), safe="")
+    scope = quote(fields.get("scope", f"repository:{path}:pull"), safe=":/")
+    sep = "&" if "?" in realm else "?"
+    tok_raw = runner.output([
+        "curl", "-fsS", "--max-time", "20",
+        f"{realm}{sep}service={service}&scope={scope}",
+    ], timeout=30)
+    token = ""
+    if tok_raw:
+        try:
+            data = json.loads(tok_raw)
+            token = str(data.get("token") or data.get("access_token") or "")
+        except ValueError:
+            token = ""
+    if not token:
+        return ""
+    out = runner.output([
+        "curl", "-fsSI", "--max-time", "20",
+        "-H", f"Authorization: Bearer {token}", "-H", accept, url,
+    ], timeout=30)
+    digest = _header_value(out, "docker-content-digest").lower()
+    return digest if _IMAGE_DIGEST.match(digest) else ""
+
+
 # --- policy -------------------------------------------------------------------
 
 
@@ -340,10 +464,11 @@ def _artifact_cfg(runner: Runner, app: AppSource) -> str:
     disagreed on the fallback (release resolution read non-`source` as
     prefer-WAR, manual mode read non-`war` as source)."""
     value = runner.settings.get(f"{app.prefix}_ARTIFACT")
-    if value not in ("auto", "war", "source"):
+    if value not in ("auto", "war", "source", "image"):
         raise CtlError(
             f"{app.prefix}_ARTIFACT='{value}' is not a recognized artifact — use "
-            f"auto (prefer the release's published WAR), war, or source"
+            f"auto (prefer the release's published WAR), war, source, or image "
+            f"(pull the release's prebuilt image by digest)"
         )
     return value
 
@@ -386,6 +511,28 @@ def _pin_release(runner: Runner, app: AppSource, release: dict, *, policy: str) 
         )
     war_url, war_sha = detect_war_asset(runner, app, release, tag)
     artifact_cfg = _artifact_cfg(runner, app)
+    if artifact_cfg == "image":
+        # Prebuilt image: the digest is resolved NOW and recorded — every
+        # later build pulls offline-decided, by digest. The WAR url+sha (when
+        # the release publishes one) is kept so flipping <APP>_ARTIFACT back
+        # to war/auto later is free, mirroring the forced-source contract.
+        repo = _image_repo(runner, app)
+        digest = resolve_image_digest(runner, repo, tag)
+        if not digest:
+            raise CtlError(
+                f"no published image for {app.label} {kind} {tag} at {repo}:{tag} — "
+                f"prebuilt images are published per app release by carlos-podman's "
+                f"'Publish Images' workflow; dispatch it (or wait for the backfill), "
+                f"check {app.prefix}_IMAGE_REPO, or fall back with "
+                f"{app.prefix}_ARTIFACT=auto/war/source"
+            )
+        return SourcePin(
+            ref=commit, kind=kind, tag=tag, commit=commit, artifact="image",
+            war_url=war_url if (war_url and war_sha) else "",
+            war_sha256=war_sha if (war_url and war_sha) else "",
+            image_ref=f"{repo}:{tag}", image_digest=digest,
+            resolved_at=_now_iso(), policy=policy,
+        )
     if artifact_cfg == "war" or (artifact_cfg == "auto" and war_url and war_sha):
         if not (war_url and war_sha):
             raise CtlError(
@@ -423,10 +570,12 @@ def _pin_branch(runner: Runner, app: AppSource, branch: str, *, policy: str) -> 
             f"— check the branch name ({app.prefix}_SOURCE_BRANCH) and connectivity, "
             f"or pin a 40-hex commit with 'carlos-ctl source set'"
         )
-    if _artifact_cfg(runner, app) == "war":
+    branch_artifact = _artifact_cfg(runner, app)
+    if branch_artifact in ("war", "image"):
         raise CtlError(
-            f"a WAR artifact (--artifact war / {app.prefix}_ARTIFACT=war) cannot be "
-            f"satisfied from a branch (only releases publish WAR assets) — use "
+            f"a {branch_artifact} artifact (--artifact {branch_artifact} / "
+            f"{app.prefix}_ARTIFACT={branch_artifact}) cannot be satisfied from a "
+            f"branch (only releases publish WAR assets and prebuilt images) — use "
             f"auto/source"
         )
     return SourcePin(
@@ -468,6 +617,27 @@ def _manual_pin(runner: Runner, app: AppSource) -> SourcePin:
     s = runner.settings
     ref = s.get(f"{app.prefix}_REF")
     artifact_cfg = _artifact_cfg(runner, app)
+    if artifact_cfg == "image":
+        # The image twin of the manual WAR channel below: the operator names
+        # the tag (<APP>_REF) and supplies the digest explicitly — no
+        # registry call, the air-gapped/mirror path. The digest is the trust
+        # anchor; accept it with or without the sha256: prefix.
+        digest = s.get(f"{app.prefix}_IMAGE_DIGEST").lower().strip()
+        if digest and not digest.startswith("sha256:"):
+            digest = f"sha256:{digest}"
+        if not _IMAGE_DIGEST.match(digest):
+            raise CtlError(
+                f"{app.prefix}_ARTIFACT=image with a manual {app.prefix}_REF needs an "
+                f"explicit {app.prefix}_IMAGE_DIGEST (the image's sha256 manifest-list "
+                f"digest, printed by the Publish Images run summary) — or use "
+                f"{app.prefix}_REF=auto / 'carlos-ctl source set' to have it resolved "
+                f"from the registry"
+            )
+        return SourcePin(
+            ref=ref, kind="manual", commit=ref if _SHA40.match(ref) else "",
+            artifact="image", image_ref=f"{_image_repo(runner, app)}:{ref}",
+            image_digest=digest, policy="manual",
+        )
     if artifact_cfg == "war":
         url = s.get(f"{app.prefix}_WAR_URL")
         sha = s.get(f"{app.prefix}_WAR_SHA256").lower()
@@ -513,6 +683,19 @@ def _resolve_app(runner: Runner, app: AppSource) -> Tuple[SourcePin, bool]:
     elif forced == "source" and pin.artifact != "source":
         # One-run override: the pin keeps its WAR data so flipping back is free.
         pin = dataclasses.replace(pin, artifact="source")
+    elif forced == "image" and pin.artifact != "image":
+        # Image digests are resolved only when the pin was made under
+        # ARTIFACT=image (no registry calls for default users), so a pin
+        # predating the flip has no digest to pull by — re-resolving is the
+        # only honest path.
+        if not (pin.image_ref and pin.image_digest):
+            raise CtlError(
+                f"{app.prefix}_ARTIFACT=image but the pinned {app.label} "
+                f"{pin.describe()} carries no image digest — 'carlos-ctl source "
+                f"update' to re-resolve (records the published image's digest), or "
+                f"{app.prefix}_ARTIFACT=auto/war/source"
+            )
+        pin = dataclasses.replace(pin, artifact="image")
     return pin, False
 
 
@@ -579,6 +762,9 @@ def _print_app(runner: Runner, app: AppSource) -> None:
         if pin.war_url:
             print(f"    war url:     {pin.war_url}")
             print(f"    war sha256:  {pin.war_sha256}")
+        if pin.image_ref:
+            print(f"    image ref:   {pin.image_ref}")
+            print(f"    image digest: {pin.image_digest}")
         if pin.resolved_at:
             print(f"    resolved at: {pin.resolved_at} ({pin.policy})")
         print(f"    pin file:    {pin_path(runner, app)}")
@@ -606,6 +792,13 @@ def _print_app(runner: Runner, app: AppSource) -> None:
                     f"no verifiable WAR asset — builds will REFUSE until "
                     f"'carlos-ctl source update' re-resolves or {app.prefix}_ARTIFACT "
                     f"is auto/source"
+                )
+            elif forced == "image" and not (pin.image_ref and pin.image_digest):
+                warn(
+                    f"{app.prefix}_ARTIFACT=image forces the prebuilt image, but this "
+                    f"pin carries no image digest — builds will REFUSE until "
+                    f"'carlos-ctl source update' re-resolves or {app.prefix}_ARTIFACT "
+                    f"is auto/war/source"
                 )
             else:
                 log(
@@ -712,7 +905,7 @@ def cmd_source(runner: Runner, args: List[str]) -> int:
                 target = DRUGREF
                 i += 1
             elif a == "--artifact":
-                if i + 1 >= len(rest) or rest[i + 1] not in ("war", "source"):
+                if i + 1 >= len(rest) or rest[i + 1] not in ("war", "source", "image"):
                     raise CtlError(_USAGE)
                 artifact = rest[i + 1]
                 i += 2
@@ -744,6 +937,16 @@ def cmd_source(runner: Runner, args: List[str]) -> int:
                     f"no WAR — builds will REFUSE until {target.prefix}_ARTIFACT is "
                     f"auto/source"
                 )
+        elif configured == "image" and pin.artifact != "image":
+            # Same shape as the war/source fight above: the persistent
+            # setting re-applies on every build, and this pin (written by an
+            # explicit --artifact war/source) has no digest to pull by.
+            warn(
+                f"{target.prefix}_ARTIFACT=image is still set and this pin carries "
+                f"no image digest — builds will REFUSE until "
+                f"'carlos-ctl source update' re-resolves or "
+                f"{target.prefix}_ARTIFACT is auto/war/source"
+            )
         if runner.settings.get(f"{target.prefix}_REF") != "auto":
             warn(
                 f"{target.prefix}_REF={runner.settings.get(f'{target.prefix}_REF')} is "
@@ -774,17 +977,18 @@ def _resolve_set_spec(runner: Runner, app: AppSource, spec: str, artifact: str) 
         s._vals[f"{app.prefix}_ARTIFACT"] = artifact  # noqa: SLF001 — per-run, like rebuild --ref
     effective = artifact or _artifact_cfg(runner, app)
     if _SHA40.match(spec):
-        if effective == "war":
+        if effective in ("war", "image"):
             # Refuse NOW, not at build time: writing a source pin here while
-            # war is demanded would report success and then brick every
-            # subsequent build (resolve_for_build's forced-war check) — the
-            # worst outcome for the air-gapped flow this path exists for.
+            # war/image is demanded would report success and then brick every
+            # subsequent build (resolve_for_build's forced-artifact check) —
+            # the worst outcome for the air-gapped flow this path exists for.
+            noun = "WAR asset" if effective == "war" else "prebuilt image"
             raise CtlError(
-                "a bare commit has no WAR asset (WAR artifacts hang off releases)"
+                f"a bare commit has no {noun} ({noun}s hang off releases)"
                 + (
-                    " — 'carlos-ctl source set <release-tag> --artifact war'"
-                    if artifact == "war" else
-                    f" and {app.prefix}_ARTIFACT=war demands one — pass "
+                    f" — 'carlos-ctl source set <release-tag> --artifact {effective}'"
+                    if artifact == effective else
+                    f" and {app.prefix}_ARTIFACT={effective} demands one — pass "
                     f"--artifact source, pin a release tag, or set "
                     f"{app.prefix}_ARTIFACT to auto/source"
                 )
@@ -803,9 +1007,9 @@ def _resolve_set_spec(runner: Runner, app: AppSource, spec: str, artifact: str) 
     match = next((r for r in releases if str(r.get("tag_name")) == spec), None)
     if match is not None:
         return _pin_release(runner, app, match, policy="manual")
-    if artifact == "war":
+    if artifact in ("war", "image"):
         raise CtlError(
-            f"'{spec}' is not a release tag of {app.repo}, and --artifact war needs a "
-            f"release (branches publish no WAR assets)"
+            f"'{spec}' is not a release tag of {app.repo}, and --artifact {artifact} "
+            f"needs a release (branches publish no WAR assets or prebuilt images)"
         )
     return _pin_branch(runner, app, spec, policy="manual")

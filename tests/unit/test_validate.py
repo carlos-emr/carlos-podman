@@ -14,6 +14,7 @@ from carlos_ctl.validate import (
     port_in_use_preflight,
     subid_map_preflight,
     validate_bind_ip,
+    validate_image_digests,
     validate_instance_name,
     validate_log_view_cidr,
     validate_ports,
@@ -306,3 +307,14 @@ class TestGraphrootPreflight:
         r.script("podman", "info", rc=0, out=f"{default_cni.parent}/carlos/storage\n")
         with pytest.raises(CtlError, match="network not found"):
             graphroot_preflight(r)
+
+
+class TestImageRepoDigestExemption:
+    def test_image_repo_defaults_do_not_trip_the_digest_warning(self, mk_settings, capsys) -> None:
+        # CARLOS_IMAGE_REPO/DRUGREF_IMAGE_REPO are repo-only by design (the
+        # digest lives in the source pin) — the third-party digest-pin warning
+        # must stay silent about them.
+        s = mk_settings()
+        validate_image_digests(s)
+        err = capsys.readouterr().err
+        assert "IMAGE_REPO" not in err
