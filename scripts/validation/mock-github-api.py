@@ -45,9 +45,14 @@ KEY = Path(os.environ.get("MOCK_KEY", HERE / "api.key"))
 
 # Frozen live-repo facts. If you refresh these, refresh the matching
 # constants at the top of ctl-validation.sh in the same commit.
-# (The mock answers every /commits/<ref> with the one release commit, so
-# CARLOS_SHA is the sha of the NEWEST release in the list below.)
+# CARLOS_SHA is the commit of the NEWEST release below; /commits/<ref>
+# answers per-tag from CARLOS_COMMITS and falls back to CARLOS_SHA for
+# branch refs (main tracked the alpha2 release commit at snapshot time).
 CARLOS_SHA = "6d4117daf97c9a7eb5f4c67921aa907bcf2dc5dc"
+CARLOS_COMMITS = {
+    "2026.08.0-alpha2": CARLOS_SHA,
+    "2026.08.0-alpha1": "74b4c0c67881ebc9879357dc68299a056d64efa9",
+}
 DRUGREF_SHA = "101063bbd13d3c767cc3c3daf5f64ac673d8d327"
 
 # Two prereleases, both real: the resolver must pick alpha2 as the newest
@@ -139,7 +144,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if p.startswith("/repos/carlos-emr/carlos/commits/"):
             if mode == "ratelimit-half":
                 return self._json({"message": "API rate limit exceeded"}, 403)
-            return self._json({"sha": CARLOS_SHA})
+            ref = p.rsplit("/", 1)[1]
+            return self._json({"sha": CARLOS_COMMITS.get(ref, CARLOS_SHA)})
         if p.startswith("/repos/carlos-emr/drugref2026/releases"):
             return self._json(DRUGREF_RELEASES)
         if p.startswith("/repos/carlos-emr/drugref2026/commits/"):
