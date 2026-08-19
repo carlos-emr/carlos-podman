@@ -84,10 +84,14 @@ DRUGREF_RELEASES = [{
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    """Serves the frozen release/commit snapshot per the current mode file."""
+
     def log_message(self, fmt, *args):
+        """Prefix request logs so harness output attributes them to the mock."""
         sys.stderr.write("MOCK %s\n" % (fmt % args))
 
     def _json(self, obj, code=200):
+        """Write obj as a JSON response with the given HTTP status code."""
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -96,6 +100,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        """Answer /releases and /commits/<ref> per the live-togglable mode."""
         mode = MODE_FILE.read_text().strip() if MODE_FILE.is_file() else "full"
         p = self.path
         if mode == "deny":
@@ -118,6 +123,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
+    """Serve the TLS mock on 127.0.0.1:443 until terminated."""
     # Threading + daemon threads: a stalled TLS handshake from one client
     # (e.g. a timed-out readiness probe) must not block later requests.
     http.server.ThreadingHTTPServer.daemon_threads = True

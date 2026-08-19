@@ -80,12 +80,13 @@ assert_run "source update resolves BOTH apps from releases" 0 "deploy with 'carl
 [ "$(pin .drugref tag)" = "v1.0.0rc2" ] && ok "drugref pin: stable release tag" || bad "drugref pin tag: $(pin .drugref tag)"
 [ "$(pin .drugref war_sha256)" = "$DRUGREF_WAR_SHA" ] && ok "drugref pin: real WAR sha256 (fixed-name asset)" || bad "drugref war sha"
 assert_run "source show prints both pins + offline note" 0 "no network" -- ctl source show
-# True API unavailability: the mock 503s EVERY request in deny mode, so this
-# holds regardless of proxy configuration (merely unsetting proxy vars would
-# still reach the mock through /etc/hosts).
+# True API unavailability: the mock 503s EVERY request in deny mode. Keep the
+# exported NO_PROXY=api.github.com bypass so the request reaches the mock's
+# 503 even in proxied environments (unsetting it would send the request to
+# the proxy instead and test the wrong failure).
 echo deny > "$MOCK_MODE_FILE"
 assert_run "source show offline (API denied) still works" 0 "2026.08.0-alpha1" -- \
-  env -u NO_PROXY -u no_proxy EMR_HOME="$H" python3 -m carlos_ctl.cli source
+  env EMR_HOME="$H" python3 -m carlos_ctl.cli source
 echo full > "$MOCK_MODE_FILE"
 assert_run "set <tag> --artifact source keeps WAR data" 0 "source compile" -- ctl source set 2026.08.0-alpha1 --artifact source
 [ "$(pin '' artifact)" = "source" ] && [ "$(pin '' war_sha256)" = "$CARLOS_WAR_SHA" ] \
@@ -145,10 +146,11 @@ grep -qx dev "$H/build/.build-mode" && ok ".build-mode records dev" || bad ".bui
 OUT=$(env BUILD_STAMP=val-1 EMR_HOME="$H" python3 -m carlos_ctl.cli source 2>&1)
 grep -q "published WAR" <<<"$OUT" && ok "post-build source show agrees with what was built" || bad "post-build show"
 
-# deny mode: a pinned rebuild that touched the API would fail loudly here.
+# deny mode: a pinned rebuild that touched the API would hit the mock's 503
+# (NO_PROXY bypass stays in place) and fail loudly here.
 echo deny > "$MOCK_MODE_FILE"
 assert_run "second build (API denied, --use-cache): sticky pins, no API" 0 "Built :build-.*" -- \
-  env -u NO_PROXY -u no_proxy BUILD_STAMP=val-2 EMR_HOME="$H" python3 -m carlos_ctl.cli build --use-cache
+  env BUILD_STAMP=val-2 EMR_HOME="$H" python3 -m carlos_ctl.cli build --use-cache
 echo full > "$MOCK_MODE_FILE"
 podman image exists localhost/carlos-app:previous && ok ":previous rollback target rotated in" || bad ":previous missing"
 assert_run "build usage error on unknown flag" 1 "usage: carlos-ctl build" -- ctl build --frobnicate
