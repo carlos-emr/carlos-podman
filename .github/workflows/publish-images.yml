@@ -221,6 +221,11 @@ jobs:
     name: build-publish (${{ matrix.app }})
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          # No git use after checkout, and `.` is the podman build context —
+          # never leave the token in .git/config where a future COPY/ADD of
+          # the context could bake it into an image layer.
+          persist-credentials: false
 
       - name: Install podman and arm64 emulation
         # Distro packages, not third-party actions/images: qemu-user-static
