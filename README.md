@@ -3014,6 +3014,14 @@ behavior, the restore drill's binlog-replay leg, and the WAF/login cookie
 flow — those are what `carlos-ctl check`, `carlos-ctl backup verify`, and a
 live login are for, on a real host.
 
+Beyond the hermetic battery, **`scripts/validation/`** holds an intensive
+real-usage harness for the release-first source selection: real podman
+builds of both apps, real curl + TLS against a local mock of
+`api.github.com` serving a frozen snapshot of real release data, tamper and
+mid-resolution failure drills, and a no-silent-failure contract on every
+check. It needs root and a disposable dev machine — see
+`scripts/validation/README.md` before running it.
+
 ## Requirements
 
 **Target hosts** (per instance):

@@ -310,7 +310,12 @@ printf '%s\n' "$DB_PW" | podman exec -i carlos-app-db bash -c \
    -e "CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"'
 ```
 
-Apply the migrations in order. The following list is for Ontario:
+Apply the migrations in order. The `SET NAMES` line pins the session to the
+schema's `utf8mb4_general_ci` collation family — MariaDB 11.4+ images ship
+`character_set_collations = utf8mb4=uca1400_ai_ci`, and under that session
+default some upstream migrations abort with `ERROR 1267` (illegal mix of
+collations) when applied through the mariadb CLI. The following list is for
+Ontario:
 
 ```bash
 MIGRATIONS=../carlos/database/mysql/migration
@@ -326,7 +331,9 @@ MIGRATIONS=../carlos/database/mysql/migration
     on/V1.0.6__restore_reporting_privilege.sql
   do
     printf 'Applying %s\n' "$file"
-    { printf '%s\n' "$DB_PW"; cat "$MIGRATIONS/$file"; } |
+    { printf '%s\n' "$DB_PW"
+      printf 'SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;\n'
+      cat "$MIGRATIONS/$file"; } |
       podman exec -i carlos-app-db bash -c \
         'read -r password; export MYSQL_PWD="$password"; mariadb -uroot oscar'
   done
@@ -529,10 +536,15 @@ revision used for the image is authoritative because new migrations may be
 added after this document is published.
 
 Use `carlos-ctl db` for each file because the standard deployment does not
-publish MariaDB on a TCP port:
+publish MariaDB on a TCP port. Prefix each file with a `SET NAMES` that pins
+the session to the schema's `utf8mb4_general_ci` collation family (MariaDB
+11.4+ images default utf8mb4 sessions to `uca1400_ai_ci` via
+`character_set_collations`, which makes some upstream migrations abort with
+`ERROR 1267` when applied through the CLI):
 
 ```bash
-sudo EMR_HOME=/usr/local/emr carlos-ctl db oscar < path/to/migration.sql
+{ printf 'SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;\n'; cat path/to/migration.sql; } |
+  sudo EMR_HOME=/usr/local/emr carlos-ctl db oscar
 ```
 
 Create and load `drugref2` using the procedure in the project guide's
