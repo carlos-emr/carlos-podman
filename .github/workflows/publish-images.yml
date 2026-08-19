@@ -153,10 +153,12 @@ jobs:
             # 404 for a missing package: check it first (org route, then the
             # user route for forks under user accounts).
             pkg_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               "https://api.github.com/orgs/${OWNER}/packages/container/${name}")
             if [ "$pkg_code" = "404" ]; then
               pkg_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                --connect-timeout 10 --max-time 30 \
                 -H "Authorization: Bearer ${GH_TOKEN}" \
                 "https://api.github.com/users/${OWNER}/packages/container/${name}")
             fi

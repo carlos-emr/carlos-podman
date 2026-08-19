@@ -538,8 +538,8 @@ refute "the failed pull moved no :previous/:latest tag" \
     bash -c "tail -n 6 '$STUBLOG' | grep -q ':previous'"
 assert "rollback works after an image-mode build" ctl "$HIMG" rollback
 # The air-gap preload contract: a digest already in the local store
-# (podman save/load, or previously pulled) is recognized — no pull at all,
-# straight to the retag and the unchanged promotion.
+# (previously pulled, or a digest-preserving replica) is recognized — no
+# pull at all, straight to the retag and the unchanged promotion.
 m=$(mark)
 assert "a PRELOADED image digest builds without pulling" \
     ctle "$HIMG" STUB_PRELOADED=1 -- build

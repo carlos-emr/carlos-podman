@@ -1975,11 +1975,15 @@ nothing downstream changes.
 - **Verify before trusting** a digest you didn't just publish:
   `gh attestation verify oci://ghcr.io/carlos-emr/carlos-app:<tag>-rN --owner carlos-emr`.
 - **Air-gap / mirror**: a digest pin makes pin-time resolution offline, but
-  the `podman pull` itself still fetches layers from the configured registry
-  unless the image is already in the local store — a truly air-gapped host
-  needs the image preloaded (`podman save`/`podman load`, or a prior pull)
-  or `carlos_image_repo` / `carlos_drugref_image_repo` pointed at a
-  reachable internal mirror. The manual channel skips resolution entirely:
+  the `podman pull` itself still fetches from the configured registry unless
+  the image is already in the local store under that exact digest. A prior
+  `podman pull` on the same host satisfies later builds offline; to move
+  images into an air-gapped environment, replicate them into an internal
+  registry with a digest-preserving copy (`skopeo copy --all
+  --preserve-digests docker://ghcr.io/... docker://mirror/...`) and point
+  `carlos_image_repo` / `carlos_drugref_image_repo` at the mirror. (`podman
+  save`/`podman load` does NOT reliably preserve registry digests or
+  manifest lists — a loaded image may not match the pin.) The manual channel skips resolution entirely:
   `<APP>_REF=<tag>`, `<APP>_ARTIFACT=image`,
   `<APP>_IMAGE_DIGEST=<sha256:...>` (the digest is printed by every
   *Publish Images* run summary). Under the full deployment, put

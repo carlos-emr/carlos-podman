@@ -645,9 +645,10 @@ class TestImageMode:
         assert (r.settings.emr_home / "build" / ".extra-ca-bundle.crt").read_text() == ""
 
     def test_preloaded_image_skips_the_pull(self, mk_runner) -> None:
-        # The documented air-gap recipe: a podman save/load'd (or previously
-        # pulled) digest is recognized locally — no registry contact, straight
-        # to the retag and the unchanged promotion machinery.
+        # The air-gap contract: a digest already in the local store
+        # (previously pulled, or replicated with a digest-preserving copy) is
+        # recognized — no registry contact, straight to the retag and the
+        # unchanged promotion machinery.
         r = self._both_image(mk_runner)
         for repo in ("ghcr.io/carlos-emr/carlos-app", "ghcr.io/carlos-emr/carlos-drugref"):
             r.script("image", "exists", f"{repo}@{self._DIGEST}", rc=0)

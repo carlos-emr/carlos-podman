@@ -95,10 +95,12 @@ def _pull_prebuilt(
     :latest promotion machinery takes over."""
     src = pin.image_ref.rsplit(":", 1)[0] + "@" + pin.image_digest
     # Local-store short-circuit: `podman pull` contacts the registry for the
-    # manifest even when the exact digest is already present, so a preloaded
-    # image (podman save/load on an air-gapped host — the documented recipe)
-    # or a previously pulled one must be recognized here, not re-fetched.
-    # Content-addressed, so "present" IS "verified".
+    # manifest even when the exact digest is already present, so an image
+    # already in the store under this digest — previously pulled, or
+    # preloaded via a digest-preserving transfer (skopeo copy
+    # --preserve-digests; podman save/load does NOT keep registry digests) —
+    # must be recognized here, not re-fetched. Content-addressed, so
+    # "present" IS "verified".
     if runner.ok(runner.podman_user_argv(["image", "exists", src])):
         log(
             f"Prebuilt {prefix} image {pin.image_ref} ({pin.image_digest[:19]}…) is "
