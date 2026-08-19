@@ -17,10 +17,10 @@ on:
         required: true
         type: string
       prerelease:
-        description: "Mark as prerelease (betas/RCs)"
+        description: "Force prerelease for a stable-looking tag (prerelease identifiers like -beta1 are auto-detected)"
         required: false
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -37,20 +37,50 @@ jobs:
         run: |
           set -euo pipefail
           v="${TAG#v}"
-          # SemVer 2.0.0 shape (numeric core + optional prerelease/build).
-          echo "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' \
-            || { echo "::error::'$TAG' is not a SemVer 2.0.0 tag"; exit 1; }
+          # Official SemVer 2.0.0 grammar (semver.org), converted to POSIX
+          # ERE: no leading zeroes in the core or in numeric prerelease
+          # identifiers, and no empty dot-separated identifiers.
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
+          echo "$v" | grep -qE "$semver" \
+            || { echo "::error::'$TAG' is not a valid SemVer 2.0.0 tag"; exit 1; }
           pkg=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' carlos_ctl/__init__.py)
           [ "$v" = "$pkg" ] \
             || { echo "::error::tag $v != carlos_ctl __version__ $pkg — bump the version first"; exit 1; }
 
-      - name: Create tag and publish release
+      - name: Create the tag on the dispatched commit
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
-          PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
-          args=(--target "$GITHUB_SHA" --generate-notes)
-          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+          # `gh release create --target` is IGNORED when the tag already
+          # exists, so never rely on it: create the tag explicitly via the
+          # refs API (fails if the ref exists). A tag that already resolves
+          # to the dispatched sha is fine (idempotent re-dispatch after a
+          # partial run); one that points elsewhere is refused. The peeled
+          # ^{} line, listed last, carries the commit for annotated tags.
+          existing=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | awk 'END{print $1}')
+          if [ -z "$existing" ]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              --raw-field "ref=refs/tags/$TAG" \
+              --raw-field "sha=$GITHUB_SHA"
+          elif [ "$existing" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $TAG already exists at $existing, not the dispatched $GITHUB_SHA — delete it or bump the version"
+            exit 1
+          fi
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          FORCE_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          # Prerelease when the SemVer version carries a prerelease
+          # identifier (strip build metadata first), or when forced.
+          args=(--verify-tag --generate-notes)
+          if [ "${v%%+*}" != "${v%%[-+]*}" ] || [ "$FORCE_PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
           gh release create "$TAG" "${args[@]}"
