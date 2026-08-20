@@ -278,21 +278,24 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl check
 #    migrations at startup (see "Schema" below).
 #      MariaDB publishes NO TCP port (the WAF/DB isolation boundary), so
 #      any loader that drives a `mysql` client over TCP cannot reach this
-#      deployment. Pipe the SQL through `carlos-ctl db` instead (same idiom
-#      as the DrugRef load below). Upstream retired the legacy
+#      deployment. Upstream retired the legacy
 #      createdatabase_*.sh/oscarinit*.sql build for Flyway-style files under
 #      database/mysql/migration/ — apply them in version order, common and
-#      province interleaved. From a github.com/carlos-emr/carlos checkout
-#      (Ontario shown; use migration/bc/ for BC):
+#      province interleaved, through `carlos-ctl db-migrate`: it runs each
+#      file in a client session pinned to the schema's utf8mb4_general_ci
+#      collation (MariaDB 11.4+ otherwise maps utf8mb4 sessions to
+#      uca1400_ai_ci and collation-sensitive migrations abort with ERROR
+#      1267) and stops fail-fast at the first SQL error. From a
+#      github.com/carlos-emr/carlos checkout (Ontario shown; use
+#      bc/ for BC):
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 cd database/mysql/migration
-for f in common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
-         on/V1.0.2__on_data.sql common/V1.0.3__performance_indexes.sql \
-         on/V1.0.4__on_performance_indexes.sql \
-         common/V1.0.5__restore_live_legacy_common_tables.sql \
-         on/V1.0.6__restore_reporting_privilege.sql; do
-  sudo EMR_HOME=/usr/local/emr carlos-ctl db oscar < "$f"
-done
+sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
+    common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
+    on/V1.0.2__on_data.sql common/V1.0.3__performance_indexes.sql \
+    on/V1.0.4__on_performance_indexes.sql \
+    common/V1.0.5__restore_live_legacy_common_tables.sql \
+    on/V1.0.6__restore_reporting_privilege.sql
 #      New upstream migrations continue the V1.0.N sequence — check
 #      database/mysql/migration/README.md in the app repo for the current
 #      list and order. See "Schema" below.
@@ -829,24 +832,60 @@ an existing datadir. For a fresh install, load the schema **after
 (The database itself is named `oscar`, kept as-is for upstream
 compatibility — that name appears only in the SQL and the `carlos-ctl db
 oscar` target, never in user-facing text.) MariaDB publishes no TCP port in
-this deployment (the WAF/DB isolation boundary), so pipe the SQL through
-`carlos-ctl db`, applying the files in version order with common and
-province interleaved — from a `github.com/carlos-emr/carlos` checkout
-(Ontario shown; substitute `bc/` for BC):
+this deployment (the WAF/DB isolation boundary), so apply the files with
+`carlos-ctl db-migrate` in version order, common and province interleaved —
+from a `github.com/carlos-emr/carlos` checkout (Ontario shown; substitute
+`bc/` for BC):
 
 ```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 cd database/mysql/migration
-for f in common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
-         on/V1.0.2__on_data.sql common/V1.0.3__performance_indexes.sql \
-         on/V1.0.4__on_performance_indexes.sql \
-         common/V1.0.5__restore_live_legacy_common_tables.sql \
-         on/V1.0.6__restore_reporting_privilege.sql; do
-  sudo EMR_HOME=/usr/local/emr carlos-ctl db oscar < "$f"
-done
+sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
+    common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
+    on/V1.0.2__on_data.sql common/V1.0.3__performance_indexes.sql \
+    on/V1.0.4__on_performance_indexes.sql \
+    common/V1.0.5__restore_live_legacy_common_tables.sql \
+    on/V1.0.6__restore_reporting_privilege.sql
 # New migrations continue the V1.0.N sequence — check
 # database/mysql/migration/README.md upstream for the current list.
 ```
+
+`db-migrate` exists because collation pinning must happen **in the same
+client session** that executes the SQL. MariaDB 11.4+ images ship
+`character_set_collations = utf8mb4=uca1400_ai_ci`, so an utf8mb4 client
+session gives every bare `CAST(... AS CHAR)` the uca1400 collation, and a
+collation-sensitive migration — upstream
+`common/V1.0.7__restore_phcp_diagnosis_groups.sql` is the known case —
+aborts with `ERROR 1267` (illegal mix of collations). `db-migrate` starts
+the client with `--init-command='SET NAMES utf8mb4 COLLATE
+utf8mb4_general_ci'`; a standalone `carlos-ctl db -e 'SET NAMES ...'`
+beforehand is NOT equivalent, because each `carlos-ctl db` run is its own
+client process and session settings die with it. The verb stays fail-fast
+(no `--force` — continuing past an arbitrary SQL error would leave the
+schema in an unknown partial state).
+
+**Recovery from a V1.0.7 collation abort:** a database migrated through a
+plain client session may have stopped at V1.0.7 with `ERROR 1267` — its DDL
+applied, its backfill `INSERT`s not. CARLOS migrations are written
+re-runnable (IF-NOT-EXISTS DDL, existence-guarded backfills), so rerun the
+failed file and every not-yet-applied file after it through one
+`db-migrate` invocation, listing them explicitly in version order per the
+upstream migration README — for example (Ontario, through the collation
+fix; check upstream for files added since):
+
+```bash
+sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
+    common/V1.0.7__restore_phcp_diagnosis_groups.sql \
+    common/V1.0.8__expand_appointment_type_location.sql \
+    common/V1.0.9__remove_carlosdoc_schedule_group_denial.sql \
+    common/V1.0.10__seed_default_measurement_groups.sql \
+    on/V1.0.11__billing_filename_unique_indexes.sql \
+    on/V1.0.12__portable_billing_filename_unique_indexes.sql \
+    common/V1.0.13__fix_phcp_diagnosis_group_backfill_collation.sql
+```
+
+The pinned sessions apply the aborted backfills and continue; files that
+already completed are guarded no-ops, so overshooting is safe.
 
 ## What changed vs. the old openo-app pod
 

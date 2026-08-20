@@ -353,3 +353,126 @@ class TestExporterCnfOwnershipHandover:
         src = inspect.getsource(lifecycle2.cmd_play)
         assert "chown_to_service_user(target, s.service_user)" in src
         assert src.index("chown_to_service_user(target") < src.index('"unshare", "chown"')
+
+
+class TestDbMigrate:
+    """`db-migrate` (issue #17): CARLOS migrations must run in a client
+    session pinned to the schema's utf8mb4_general_ci family — on MariaDB
+    11.4+ the session default is uca1400_ai_ci and V1.0.7's bare
+    CAST(... AS CHAR) comparison dies with ERROR 1267. The pin has to ride
+    the SAME session as the SQL (a prior `db -e 'SET NAMES ...'` process
+    doesn't carry over), so the client is started with --init-command."""
+
+    @staticmethod
+    def _sql(tmp_path: Path, *names: str) -> list:
+        files = []
+        for n in names:
+            p = tmp_path / n
+            p.write_text("SELECT 1;\n")
+            files.append(str(p))
+        return files
+
+    def _runner(self, mk_runner):
+        r = mk_runner("CARLOS_DB_ROOT_PASSWORD=root-pw\n")
+        r.script("podman", "ps", out=f"{r.settings.app_pod}-db\n")
+        return r
+
+    def test_pins_the_session_collation_in_the_same_client(self, mk_runner, tmp_path) -> None:
+        r = self._runner(mk_runner)
+        assert dbops.cmd_db_migrate(r, self._sql(tmp_path, "V1.0.7.sql")) == 0
+        execs = [c for c in r.calls if "exec" in c and "mariadb" in c]
+        assert len(execs) == 1
+        assert f"--init-command={dbops.MIGRATION_SESSION_PIN}" in execs[0]
+        assert execs[0][-1] == "oscar"
+
+    def test_applies_files_in_argv_order(self, mk_runner, tmp_path) -> None:
+        r = self._runner(mk_runner)
+        files = self._sql(tmp_path, "V1.0.7.sql", "V1.0.13.sql")
+        assert dbops.cmd_db_migrate(r, files) == 0
+        execs = [c for c in r.calls if "exec" in c and "mariadb" in c]
+        assert len(execs) == 2
+
+    def test_db_flag_overrides_the_target_database(self, mk_runner, tmp_path) -> None:
+        r = self._runner(mk_runner)
+        assert dbops.cmd_db_migrate(r, ["--db", "drugref2", *self._sql(tmp_path, "a.sql")]) == 0
+        execs = [c for c in r.calls if "exec" in c and "mariadb" in c]
+        assert execs[0][-1] == "drugref2"
+
+    def test_fail_fast_stops_before_the_next_file(self, mk_runner, tmp_path) -> None:
+        # NO --force semantics: the first SQL error ends the run; the
+        # remaining files are named in the error, not silently attempted.
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = self._runner(mk_runner)
+        r.script("podman", "exec", rc=1)
+        files = self._sql(tmp_path, "V1.0.7.sql", "V1.0.13.sql")
+        with pytest.raises(CtlError, match=r"V1\.0\.7\.sql failed.*V1\.0\.13\.sql"):
+            dbops.cmd_db_migrate(r, files)
+        execs = [c for c in r.calls if "exec" in c and "mariadb" in c]
+        assert len(execs) == 1
+
+    def test_a_missing_file_refuses_before_any_sql_runs(self, mk_runner, tmp_path) -> None:
+        # A typo in the MIDDLE of the list must not half-apply the sequence.
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = self._runner(mk_runner)
+        first = self._sql(tmp_path, "V1.0.7.sql")
+        with pytest.raises(CtlError, match="not found"):
+            dbops.cmd_db_migrate(r, [*first, str(tmp_path / "nope.sql")])
+        assert not any("exec" in c and "mariadb" in c for c in r.calls)
+
+    def test_requires_the_root_password_in_the_env_file(self, mk_runner, tmp_path) -> None:
+        # Stdin carries the SQL, so the interactive -p prompt is unusable —
+        # refuse with guidance instead of hanging on a prompt nobody sees.
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = mk_runner("")
+        r.script("podman", "ps", out=f"{r.settings.app_pod}-db\n")
+        with pytest.raises(CtlError, match="CARLOS_DB_ROOT_PASSWORD"):
+            dbops.cmd_db_migrate(r, self._sql(tmp_path, "a.sql"))
+
+    def test_requires_the_db_container_running(self, mk_runner, tmp_path) -> None:
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = mk_runner("CARLOS_DB_ROOT_PASSWORD=pw\n")
+        r.script("podman", "ps", out="")
+        with pytest.raises(CtlError, match="db container not running"):
+            dbops.cmd_db_migrate(r, self._sql(tmp_path, "a.sql"))
+
+    def test_the_password_never_reaches_argv(self, mk_runner, tmp_path) -> None:
+        r = self._runner(mk_runner)
+        dbops.cmd_db_migrate(r, self._sql(tmp_path, "a.sql"))
+        assert not any("root-pw" in tok for call in r.calls for tok in call)
+
+    def test_flag_shaped_or_empty_file_lists_are_refused(self, mk_runner, tmp_path) -> None:
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = self._runner(mk_runner)
+        with pytest.raises(CtlError, match="usage"):
+            dbops.cmd_db_migrate(r, [])
+        with pytest.raises(CtlError, match="usage"):
+            dbops.cmd_db_migrate(r, ["--force", *self._sql(tmp_path, "a.sql")])
+
+    def test_flag_shaped_db_value_is_refused(self, mk_runner, tmp_path) -> None:
+        # The db name lands on the client's argv: `--db --force` would turn
+        # ON mariadb's continue-past-SQL-errors mode (defeating fail-fast)
+        # and `--db --help` exits 0 without reading the SQL at all.
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = self._runner(mk_runner)
+        for bad in ("--force", "--help", "-f", ""):
+            with pytest.raises(CtlError, match="invalid database name"):
+                dbops.cmd_db_migrate(r, ["--db", bad, *self._sql(tmp_path, "a.sql")])
+        assert not any("exec" in c and "mariadb" in c for c in r.calls)
