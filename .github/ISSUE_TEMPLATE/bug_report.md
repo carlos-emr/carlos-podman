@@ -12,8 +12,9 @@ assignees: ''
 **What happened**
 
 A clear description of the problem, including the exact `carlos-ctl` verb /
-playbook invocation and its output. `CARLOS_CTL_TRACEBACK=1` turns a CLI
-error into a full traceback worth pasting.
+playbook invocation and its output. For an `ERROR: unexpected <Type>` crash,
+re-run with `CARLOS_CTL_TRACEBACK=1` and paste the full traceback (ordinary
+`ERROR:` messages are already the complete story).
 
 **What you expected**
 

@@ -328,9 +328,9 @@ cd carlos-podman
 ```
 
 For reproducible results, check out the same commit used for the image build
-(`$CARLOS_SHA` from step 2 — for every option that is the release's
-source commit; under the full Ansible deployment `carlos-ctl source` prints
-the pinned tag and commit):
+(`$CARLOS_SHA` from step 2 — for Options 1 and 2 that is the release's
+source commit, for Option 3 the branch commit you resolved; under the full
+Ansible deployment `carlos-ctl source` prints the pinned tag and commit):
 
 ```bash
 cd ../carlos

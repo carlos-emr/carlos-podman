@@ -360,8 +360,8 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS osc
 
 …then apply the Flyway migration files from a
 `github.com/carlos-emr/carlos` checkout in version order through one
-`carlos-ctl db-migrate` invocation — the full current file list (Ontario and
-BC variants) and the collation rationale live in [Schema](#schema).
+`carlos-ctl db-migrate` invocation — the full current Ontario file list,
+the BC guidance, and the collation rationale live in [Schema](#schema).
 
 **8. Fresh install only — create and load the drugref2 database** (the full
 recipe is in the [DrugRef section](#drugref), including the mandatory InnoDB
@@ -404,7 +404,7 @@ schema load seeds the initial administrator account per upstream's database
 setup (see `database/mysql/` in the app repo); create your own provider/admin
 accounts through the Administration UI immediately and disable any seed
 account. A datadir carried over from an existing OpenO/OSCAR install keeps its
-existing logins. Related knob: `carlos_pin_encrypted` (role default `no`) —
+existing logins. Related knob: `carlos_pin_encrypted` (effective default `no`) —
 flipping it to `yes` before the seeded administrator's PIN has been re-saved
 through the UI locks that account out, which is why the default is
 conservative; see the rationale in `defaults/main.yml`.
@@ -611,9 +611,8 @@ it; note these four:
   view needs). The pod specs apply at the next start; `play` restarts obs → app
   → waf and vmagent disk-buffers across the seconds-wide 401 window, so there
   is no log loss. Set `carlos_obs_http_auth: false` to keep the old
-  posture; `carlos_obs_http_user`/`carlos_obs_http_password` in host_vars
-  (vaultable) override the generated credential.
-  unauthenticated posture.
+  unauthenticated posture; `carlos_obs_http_user`/`carlos_obs_http_password`
+  in host_vars (vaultable) override the generated credential.
 - **The host firewall defaults ON.** On a multi-instance host set
   `carlos_host_firewall_enabled: false` on every instance but one (it is
   host-global), and confirm `carlos_host_firewall_ssh_port` matches your sshd —
@@ -689,9 +688,9 @@ carlos_pma_port: 19444
 ```
 
 (For a non-default instance name, `carlos-ctl setup` pre-fills a +10000
-offset on the internal ports — pub/log-view/store/pma; the user-facing
-`HTTPS_PORT` keeps its `443` default, so offset that one yourself when
-instances share a `BIND_IP`.)
+offset on the internal ports — pub, log view, the two stores, vmalert, and
+pma; the user-facing `HTTPS_PORT` keeps its `443` default, so offset that
+one yourself when instances share a `BIND_IP`.)
 
 Each instance renders its own per-instance nftables table
 (`ip <INSTANCE>-nat`) redirecting its `BIND_IP:HTTPS_PORT →
@@ -983,7 +982,11 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
 The pinned sessions apply the aborted backfills and continue; files that
 already completed are guarded no-ops, so overshooting is safe. On a BC
 database the recovery sequence is the `common/` files only
-(V1.0.7–V1.0.10 and V1.0.13) — V1.0.11/V1.0.12 are Ontario-only.
+(V1.0.7–V1.0.10 and V1.0.13) — V1.0.11/V1.0.12 are Ontario-only. The BC
+twins referenced above are `bc/V1.0.1__bc_schema.sql`,
+`bc/V1.0.2__bc_data.sql`, and
+`bc/V1.0.6__restore_live_legacy_bc_tables_and_reference_data.sql`; the
+upstream migration README stays authoritative for both provinces.
 
 ## What changed vs. the old openo-app pod
 
@@ -1328,8 +1331,8 @@ migrations; a raw `carlos-ctl db drugref2 < file.sql` works too but runs
 unpinned.)
 
 (`carlos-ctl db` is the host DB-admin wrapper — see
-[Database admin from the host](#database-admin-from-the-host). The piped
-imports need `CARLOS_DB_ROOT_PASSWORD` in the env file — the playbook renders
+[Database admin from the host](#database-admin-from-the-host). Both verbs
+need `CARLOS_DB_ROOT_PASSWORD` in the env file — the playbook renders
 it there.)
 
 **Convert the loaded tables to InnoDB — otherwise every nightly backup
@@ -1582,9 +1585,9 @@ can find every accepted risk and every knob that changes it in one place.
 
 | # | Accepted risk (default posture) | Where it is enforced/documented | Change it with |
 |---|--------------------------------|----------------------------------|----------------|
-| 1 | VictoriaLogs/VictoriaMetrics/vmalert are **basic-auth authenticated** (one regenerable per-instance credential; every client — vmagent, vector, scrape, the log view, carlos-ctl — carries it; `check` proves a credential-free store query is rejected 401). Still loopback + app-pod-only on `carlos-net`; the credential is the second layer | this section, obs pod template, [Secrets](#secrets) | `carlos_obs_http_auth: false` restores the legacy unauthenticated posture; `carlos-ctl rotate obs` re-mints the credential |
-| 2 | The **host journal keeps the unredacted copy** of all container stdout (collector-side redaction only protects the shipped store) | this section, [Requirements](#requirements) | `carlos_journald_max_use` (size), `systemd-journal` group membership (access) |
-| 3 | Shipped logs (incl. WAF access/audit streams) retained **180 days** behind one shared basic-auth credential | this section, log-view section | `carlos_log_retention`, `rotate log-view`, `carlos_log_view_allow_cidr` |
+| 1 | VictoriaLogs/VictoriaMetrics/vmalert are **basic-auth authenticated** (one regenerable per-instance credential; every client — vmagent, vector, scrape, the log view, carlos-ctl — carries it; `check` proves a credential-free store query is rejected 401). Still loopback + app-pod-only on `carlos-net`; the credential is the second layer | [WAF audit log & PHI](#waf-audit-log--phi), obs pod template, [Secrets](#secrets) | `carlos_obs_http_auth: false` restores the legacy unauthenticated posture; `carlos-ctl rotate obs` re-mints the credential |
+| 2 | The **host journal keeps the unredacted copy** of all container stdout (collector-side redaction only protects the shipped store) | [WAF audit log & PHI](#waf-audit-log--phi), [Requirements](#requirements) | `carlos_journald_max_use` (size), `systemd-journal` group membership (access) |
+| 3 | Shipped logs (incl. WAF access/audit streams) retained **180 days** behind one shared basic-auth credential | [WAF audit log & PHI](#waf-audit-log--phi), log-view section | `carlos_log_retention`, `rotate log-view`, `carlos_log_view_allow_cidr` |
 | 4 | WAF→Tomcat backend TLS is **encrypted but not verified** (self-signed per-start cert, `proxy_ssl_verify off`); upstream authn = edge-network membership | WAF/DB network isolation section, `server.xml`, waf pod template | none (image template has no trusted-CA hook) — accepted |
 | 5 | The front-door DNAT is **IPv4-only**; an AAAA record on the host would bypass the redirect | nftables template header | bind AAAA off / IPv4-only front address |
 | 6 | The default restic repository is **local-path** ("first tier"); a fire/ransomware event takes EMR + backups together | Backups section; the monitor nags (`restic-repo-local`); **first go-live is REFUSED** on a local repo | offsite `RESTIC_REPOSITORY` (s3:/rest:/sftp:/b2:), or `CARLOS_ACCEPT_LOCAL_REPO=1` to accept and silence |
@@ -2248,8 +2251,9 @@ Behavior changes an existing install should review before/after pulling:
   integration). Sites that actually feed an ADT consumer set it back to
   `true` and point `carlos_hl7_a04_dir` at the consumed path. Similarly the
   eForm PDF browser check defaults off
-  (`carlos_eform_pdf_browser_startup_check` and its `_chromium_path`/
-  `_chromedriver_path` siblings) — enable only where that upstream feature
+  (`carlos_eform_pdf_browser_startup_check`,
+  `carlos_eform_pdf_browser_chromium_path`,
+  `carlos_eform_pdf_browser_chromedriver_path`) — enable only where that upstream feature
   is in use.
 - **`encryption.util.secret.key` is now required in `carlos.properties`**
   (boot-fatal on the next `rebuild` to current CARLOS develop — the app
@@ -2979,7 +2983,7 @@ the instance from `$EMR_HOME` (or `--instance <name>`).
 | Alert | First diagnostic | Common cause → remediation |
 | --- | --- | --- |
 | **missed heartbeat** (external monitor) | `systemctl status <inst>-monitor.timer`; `carlos-ctl check` | Host down / monitor timer dead / total outage. If the host is up, restart the timer; if the whole box is unreachable, this is the DR path (see the disaster-recovery runbook). |
-| **container-down-…** | `runuser -u <svc> -- podman ps -a`; `podman logs <pod>-<ctr>` | Crash loop (bad config/secret, OOM). Fix the cause, `carlos-ctl play`. A blank/unmounted datadir pages the guard — see "a container won't start". |
+| **container-down-…** | `runuser -u <svc> -- podman ps -a`; `podman logs <pod>-<ctr>` | Crash loop (bad config/secret, OOM). Fix the cause, `carlos-ctl play`. A blank/unmounted datadir pages the guard — see [A container won't start](#a-container-wont-start). |
 | **MysqlDown / app-db-root** | `carlos-ctl db -e 'SELECT 1'` | DB not accepting connections, or app still on root: run `carlos-ctl db-users` (see [Least-privilege DB accounts](#least-privilege-db-accounts)). |
 | **DiskLow** | `df -h $EMR_HOME`; `du -sh $EMR_HOME/backup/mariadb-hot/* $EMR_HOME/logs/*.hprof 2>/dev/null` | See the reclaim order below. |
 | **backup-stamp-stale / restore-drill-stale** | `carlos-ctl backup status`; `journalctl -u <inst>-backup.service` | Backup/verify timer failing — read the unit log, fix the repo/creds, `systemctl start <inst>-backup.service`. A stale drill means the last restore test did not complete: investigate before trusting the backups. |
@@ -2995,7 +2999,7 @@ the instance from `$EMR_HOME` (or `--instance <name>`).
 | **pma-lingering** | `runuser -u <svc> -- podman ps` | Break-glass phpMyAdmin is still running — if no active admin session, stop it (a dropped SSH tunnel can leave it serving; the `--ttl` bound auto-removes it eventually). |
 | **db-not-accepting** | `carlos-ctl db -e 'SELECT 1'` | The db container runs but MariaDB is not accepting connections on 3306 — check `carlos-ctl logs db` for a crash/recovery loop. |
 | **front-door-nat-missing** | `nft list table ip <inst>-nat` | The DNAT table (or its prerouting rule) is gone — external clients cannot reach the EMR even though on-host probes read healthy; `systemctl restart <inst>-nft.service`. |
-| **vm-wedged / vmalert-unreachable / vmalert-response-malformed** (obs profile) | `curl -s 127.0.0.1:<port>/health` | The metrics store or rule evaluator is up but not answering (or answering garbage) — every metric-derived rule silently reads green; restart the obs pod. |
+| **vm-wedged / vmalert-unreachable / vmalert-response-malformed** (obs profile) | `carlos-ctl check` (its store probes carry the basic-auth credential); `carlos-ctl logs <obs container>` | The metrics store or rule evaluator is up but not answering (or answering garbage) — every metric-derived rule silently reads green; restart the obs pod. |
 | **cert-file-missing** | `ls -l $EMR_HOME/container/conf/waf/certs/` | The served cert/key file vanished on a deployed instance — expiry monitoring is blind and the next WAF restart will fail; restore the cert+key. |
 | **accept-empty-marker-present** | `ls $EMR_HOME/container/guard/` | The blank-datadir guard is disarmed by a leftover `accept-empty-datadir` marker — re-run `carlos-ctl play` to clear it. |
 | **alert-channel-unset** | check `ALERT_WEBHOOK` / `ALERT_EMAIL` in `carlos-app.env` | A deployed instance has no alert channel configured — pages only reach the local journal; set a channel (or ack with `ALERT_JOURNAL_ONLY=1`). |
@@ -3054,9 +3058,10 @@ the host OS and reboot safely:
 
 ## Troubleshooting
 
-For any `carlos-ctl` failure, `CARLOS_CTL_TRACEBACK=1` turns the one-line
-operator error into the full Python traceback (for bug reports and
-debugging).
+`carlos-ctl` reports every operator-facing error (`CtlError`) as a one-line
+`ERROR:` message that already carries the full story. For an *unexpected*
+crash (`ERROR: unexpected <Type>: ...`), `CARLOS_CTL_TRACEBACK=1` re-raises
+it as the full Python traceback for bug reports and debugging.
 
 ### A container won't start
 
@@ -3377,7 +3382,7 @@ with direct egress.
   second pass is a no-op. Needs root, Podman, and network (it resolves
   the migration source from the newest published CARLOS release;
   `CARLOS_MIGRATIONS_DIR` uses a local checkout, `CARLOS_MIGRATIONS_REF`
-  pins a tag, `GH_TOKEN` authenticates the API call in CI). It REFUSES
+  pins a tag or ref such as `main`, `GH_TOKEN` authenticates the API call in CI). It REFUSES
   to run on a host with a live `carlos-app-db` container — disposable
   hosts/CI only. **Not part of `make check`** (which stays hermetic);
   run it via `make db-migrate-int` or directly.
@@ -3415,7 +3420,9 @@ commit SHAs):
   (see [Releases & versioning](#releases--versioning)).
 - **image-digest-freshness** — weekly: re-resolves every `tag@sha256` pin
   across the role defaults, `config.py`, and both Containerfiles, and
-  opens an advisory report when a pinned digest has drifted from its tag.
+  fails the run visibly when a pinned digest has drifted from its tag
+  (advisory only — it never auto-bumps a pin; a red weekly run is the
+  signal to review and bump by hand).
 
 ## Releases & versioning
 

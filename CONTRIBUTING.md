@@ -30,7 +30,7 @@ a local result disagrees with CI. For the Ansible checks you also need
 
 ```bash
 make check            # the hermetic battery: ruff + mypy + pytest +
-                      # tests/run-tests.sh (e2e, needs sudo) + ansible-checks
+                      # tests/run-tests.sh (hermetic e2e; CI runs it under sudo) + ansible-checks
 make db-migrate-int   # NON-hermetic: real MariaDB via podman — disposable
                       # hosts only; refuses to run beside a live deployment
 ```

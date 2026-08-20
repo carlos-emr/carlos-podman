@@ -4,9 +4,19 @@
 
 The README's files-catalogue carries the CLI's canonical verb list; it has
 drifted before (db-migrate, logs, cert-renew, backup status and two rotate
-targets were all missing at one point). These tests pin the inventory to the
-dispatcher so the next new verb fails CI until it is documented — and so a
-documented verb that no longer exists fails too.
+targets were all missing at one point). These tests pin:
+
+- every dispatched TOP-LEVEL verb is documented, and every documented verb
+  still exists (AST-extracted from the dispatcher, so quote style and
+  container type don't matter);
+- the documented `backup <...>` modes and `rotate <...>` targets match the
+  code's own mode/target lists (the sub-verb drift the inventory suffered);
+- every verb in cli.py's USAGE text is dispatch-reachable, which doubles as
+  a canary for a dispatcher refactor the AST walk no longer recognizes.
+
+Contract: the inventory paragraph's backticked tokens are verb tokens only —
+a prose backtick like `sops` added there will (deliberately, loudly) fail
+the phantom-verb direction.
 """
 
 import ast
@@ -86,4 +96,54 @@ class TestVerbInventory:
         assert not phantom, (
             f"README documents verbs cli.py does not dispatch: "
             f"{sorted(phantom)} — remove or correct the inventory"
+        )
+
+
+def _inventory_subverbs(verb: str) -> set:
+    """The <a|b|c> group documented for one verb in the inventory block."""
+    m = re.search(rf"`{verb} <([a-z0-9|-]+)>`", _inventory_block())
+    assert m, f"inventory lists no <...> group for {verb}"
+    return set(m.group(1).split("|"))
+
+
+def _usage_verbs() -> set:
+    """Verbs named at the left margin of cli.py's USAGE help text."""
+    src = (ROOT / "carlos_ctl" / "cli.py").read_text(encoding="utf-8")
+    usage = re.search(r'USAGE = """(.*?)"""', src, re.S)
+    assert usage, "USAGE string not found in cli.py"
+    verbs = set()
+    for line in usage.group(1).split("\n"):
+        m = re.match(r"  ([a-z][a-z0-9-]*)(?:\s|$)", line)
+        if m:
+            verbs.add(m.group(1))
+    assert len(verbs) > 15, "USAGE parse failed — cli.py help layout changed?"
+    return verbs
+
+
+class TestSubVerbInventory:
+    def test_backup_modes_match_code(self) -> None:
+        """The documented backup <...> modes equal backup.py's mode gate."""
+        src = (ROOT / "carlos_ctl" / "backup.py").read_text(encoding="utf-8")
+        m = re.search(r'if mode not in \(([^)]*)\)', src)
+        assert m, "backup.py mode gate not found"
+        code_modes = set(re.findall(r'"([a-z]+)"', m.group(1)))
+        assert _inventory_subverbs("backup") == code_modes
+
+    def test_rotate_targets_match_code(self) -> None:
+        """The documented rotate <...> targets equal secrets.py's usage."""
+        src = (ROOT / "carlos_ctl" / "secrets.py").read_text(encoding="utf-8")
+        m = re.search(r"rotate <([a-z0-9|-]+)>", src)
+        assert m, "secrets.py rotate usage not found"
+        assert _inventory_subverbs("rotate") == set(m.group(1).split("|"))
+
+
+class TestUsageDispatchCoverage:
+    def test_every_usage_verb_is_dispatchable(self) -> None:
+        """USAGE lists every verb, so usage ⊆ dispatch catches a dispatcher
+        refactor the AST extraction silently stopped recognizing."""
+        missing = _usage_verbs() - _dispatch_verbs()
+        assert not missing, (
+            f"cli.py USAGE names verbs the dispatch parse did not find: "
+            f"{sorted(missing)} — either USAGE is stale or _dispatch_verbs "
+            f"no longer recognizes the dispatcher's shape"
         )

@@ -248,7 +248,7 @@ cat <<EOF
 
 Setup complete. Next (QUICKSTART.md steps 2 and 4-6):
 
-  1. build the image (if not done) — QUICKSTART step 2 has both paths.
+  1. obtain the image (if not done) — QUICKSTART step 2 lists the options.
      Preferred: a published release WAR (fast, sha256-verified):
        CARLOS_TAG='<newest tag from api.github.com/repos/carlos-emr/carlos/releases>'
        WAR_URL=https://github.com/carlos-emr/carlos/releases/download/\$CARLOS_TAG/carlos-\$CARLOS_TAG.war
