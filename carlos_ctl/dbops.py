@@ -609,6 +609,14 @@ def cmd_db_migrate(runner: Runner, args: List[str]) -> int:
             raise CtlError(usage)
         db = files[1]
         files = files[2:]
+        # The db name lands on the mariadb client's argv, so a flag-shaped
+        # value would be parsed as a client OPTION, not a database:
+        # `--db --force` would enable the client's continue-past-SQL-errors
+        # mode (silently defeating this verb's fail-fast contract) and
+        # `--db --help` exits 0 without reading the SQL at all. Allow only
+        # plain identifier-style names (leading dash impossible).
+        if not re.fullmatch(r"[A-Za-z0-9_$][A-Za-z0-9_$-]*", db):
+            raise CtlError(f"invalid database name '{db}' — {usage}")
     # Refuse flag-shaped leftovers instead of piping them to the client as
     # filenames (same no-silently-dropped-arguments contract as db-backup).
     if not files or any(f.startswith("-") for f in files):

@@ -462,3 +462,17 @@ class TestDbMigrate:
             dbops.cmd_db_migrate(r, [])
         with pytest.raises(CtlError, match="usage"):
             dbops.cmd_db_migrate(r, ["--force", *self._sql(tmp_path, "a.sql")])
+
+    def test_flag_shaped_db_value_is_refused(self, mk_runner, tmp_path) -> None:
+        # The db name lands on the client's argv: `--db --force` would turn
+        # ON mariadb's continue-past-SQL-errors mode (defeating fail-fast)
+        # and `--db --help` exits 0 without reading the SQL at all.
+        import pytest
+
+        from carlos_ctl.util import CtlError
+
+        r = self._runner(mk_runner)
+        for bad in ("--force", "--help", "-f", ""):
+            with pytest.raises(CtlError, match="invalid database name"):
+                dbops.cmd_db_migrate(r, ["--db", bad, *self._sql(tmp_path, "a.sql")])
+        assert not any("exec" in c and "mariadb" in c for c in r.calls)
