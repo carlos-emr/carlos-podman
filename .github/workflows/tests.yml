@@ -90,7 +90,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq podman python3-yaml python3-bcrypt
       - name: collation-safe migration path against real MariaDB 11.4+
-        run: sudo tests/db-migrate-integration.sh
+        # GH_TOKEN authenticates the release-picking API call (avoids the
+        # anonymous rate limit shared across runner IPs); read-only token.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sudo GH_TOKEN="$GH_TOKEN" tests/db-migrate-integration.sh
 
   ansible:
     runs-on: ubuntu-latest

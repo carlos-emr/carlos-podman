@@ -20,11 +20,16 @@
 #
 # Requires: root (the CLI's runuser service-user boundary), real podman,
 # and network (db image pull + migration download). Migration files come
-# from a local carlos checkout when CARLOS_MIGRATIONS_DIR is set, else from
-# raw.githubusercontent.com at CARLOS_MIGRATIONS_REF — defaulting to an
-# IMMUTABLE release tag (published tags are never moved and their Flyway
-# files never edited, per the app repo's release policy), so CI results
-# cannot drift with upstream branch changes.
+# from a local carlos checkout when CARLOS_MIGRATIONS_DIR is set, or from
+# raw.githubusercontent.com at CARLOS_MIGRATIONS_REF when set; by default
+# the ref is resolved through the DOCUMENTED release-picking rule — the
+# newest published CARLOS release, prereleases only as a fallback — the
+# same rule carlos-ctl's `source` resolution and the Publish Images
+# workflow apply. The resolved tag is immutable (published tags are never
+# moved and their Flyway files never edited, per the app repo's release
+# policy) and is printed for attribution. There is deliberately NO branch
+# default; to test a branch head, pass CARLOS_MIGRATIONS_REF=main (the
+# release-train branch) explicitly.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -114,15 +119,38 @@ V7=V1.0.7__restore_phcp_diagnosis_groups.sql
 V13=V1.0.13__fix_phcp_diagnosis_group_backfill_collation.sql
 if [ -n "${CARLOS_MIGRATIONS_DIR:-}" ]; then
     cp "$CARLOS_MIGRATIONS_DIR/common/$V7" "$CARLOS_MIGRATIONS_DIR/common/$V13" "$MIG/"
+    ok "migrations copied from $CARLOS_MIGRATIONS_DIR"
 else
-    # Immutable tag: release tags are never moved and Flyway files in
-    # published tags are never edited, so this stays byte-identical forever.
-    REF="${CARLOS_MIGRATIONS_REF:-2026.08.0-alpha3}"
+    REF="${CARLOS_MIGRATIONS_REF:-}"
+    if [ -z "$REF" ]; then
+        # The documented release-picking rule: newest published release,
+        # prereleases only as a fallback (same rule as carlos-ctl `source`
+        # and the Publish Images workflow). The resolved tag is immutable.
+        # GH_TOKEN (when present, e.g. github.token in CI) avoids the
+        # anonymous API rate limit shared across runner IPs.
+        auth=()
+        [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+        REF=$(curl -fsSL --retry 3 "${auth[@]}" \
+            "https://api.github.com/repos/carlos-emr/carlos/releases?per_page=100" \
+            | python3 -c '
+import json, sys
+rels = [r for r in json.load(sys.stdin) if not r.get("draft")]
+stable = [r for r in rels if not r.get("prerelease")]
+pool = stable or rels
+print(pool[0]["tag_name"] if pool else "")' ) || REF=""
+        [ -n "$REF" ] || {
+            echo "could not resolve a CARLOS release (API unreachable or no releases)."
+            echo "Set CARLOS_MIGRATIONS_REF to a release tag (or 'main' for the"
+            echo "release-train branch head), or CARLOS_MIGRATIONS_DIR to a local checkout."
+            exit 1
+        }
+        echo "== resolved newest CARLOS release: $REF"
+    fi
     BASE="https://raw.githubusercontent.com/carlos-emr/carlos/$REF/database/mysql/migration/common"
     curl -fsSL --retry 3 -o "$MIG/$V7" "$BASE/$V7"
     curl -fsSL --retry 3 -o "$MIG/$V13" "$BASE/$V13"
+    ok "migrations fetched at $REF"
 fi
-ok "migrations fetched ($V7, $V13)"
 
 # -- 1. REPRO: an unpinned utf8mb4 session fails exactly as the issue says --
 # The issue's failure environment is "an utf8mb4 client session": under
