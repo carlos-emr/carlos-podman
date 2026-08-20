@@ -920,7 +920,9 @@ compatibility — that name appears only in the SQL and the `carlos-ctl db
 oscar` target, never in user-facing text.) MariaDB publishes no TCP port in
 this deployment (the WAF/DB isolation boundary), so apply the files with
 `carlos-ctl db-migrate` in version order, common and province interleaved —
-from a `github.com/carlos-emr/carlos` checkout (Ontario shown; for BC use
+from a `github.com/carlos-emr/carlos` checkout **at the release the
+deployment runs** (`carlos-ctl source` prints the pinned tag and commit;
+check it out so the migrations match the deployed WAR). Ontario shown; for BC use
 the `bc/` twins of V1.0.1/V1.0.2/V1.0.6 and drop the Ontario-only
 V1.0.4/V1.0.11/V1.0.12):
 

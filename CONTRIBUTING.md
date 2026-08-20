@@ -13,8 +13,12 @@ pip or make:
 
 ```bash
 git clone https://github.com/carlos-emr/carlos-podman.git && cd carlos-podman
-pip install ruff==0.15.8 mypy==1.19.1 pytest PyYAML bcrypt types-PyYAML
+pip install ruff==0.15.8 mypy==1.19.1 pytest PyYAML 'bcrypt<4.1' types-PyYAML
 ```
+
+(The `bcrypt<4.1` pin exists for the Ansible checks — passlib 1.7.4 breaks
+against bcrypt >= 4.1 — and satisfies the CLI's own `bcrypt>=3.2` floor, so
+one environment serves both suites.)
 
 (The exact pinned toolchain CI uses is in
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) — match it when

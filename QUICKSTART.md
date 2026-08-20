@@ -628,9 +628,14 @@ Skip this subsection when adopting an existing OpenO/OSCAR database. Follow the
 migration adoption instructions in the CARLOS source repository instead, and
 test the upgrade against a restorable copy before using the existing data.
 
-For a new database, clone the CARLOS source and check
-`database/mysql/migration/README.md` for the current migration order. Create the
-`oscar` database through the local container boundary:
+For a new database, clone the CARLOS source and check out the exact release
+the deployment runs — `sudo EMR_HOME=/usr/local/emr carlos-ctl source` prints
+the pinned tag and commit; `git checkout <that tag>` — so the migrations you
+apply match the deployed WAR (a default-branch checkout can carry migrations
+newer than the application). Then check
+`database/mysql/migration/README.md` in that checkout for the current
+migration order, and create the `oscar` database through the local container
+boundary:
 
 ```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e \

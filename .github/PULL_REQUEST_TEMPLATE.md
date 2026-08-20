@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (C) 2026 CARLOS Contributors -->
 ## Summary
 
 <!-- What changes, and why. Reference issues with "fixes #N" where one exists. -->

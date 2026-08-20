@@ -276,7 +276,7 @@ Setup complete. Next (QUICKSTART.md steps 2 and 4-6):
        if [ -e /var/run/mysqld/mysqld.sock ] || [ -L /var/run/mysqld/mysqld.sock ]; then
          echo 'Refusing to replace the existing MariaDB socket path' >&2
        else
-         sudo ln -s $EMR_HOME/run/db-socket/mysqld.sock /var/run/mysqld/mysqld.sock
+         sudo ln -s -- "$EMR_HOME/run/db-socket/mysqld.sock" /var/run/mysqld/mysqld.sock
        fi
      then run it with MYSQL_HOST=localhost (see QUICKSTART step 6's
      Playwright notes)

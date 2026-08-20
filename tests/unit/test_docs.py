@@ -9,6 +9,7 @@ dispatcher so the next new verb fails CI until it is documented — and so a
 documented verb that no longer exists fails too.
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -16,11 +17,29 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _dispatch_verbs() -> set:
-    """Every verb literal cli.py dispatches on (single and tuple matches)."""
+    """Every verb literal cli.py dispatches on, extracted structurally.
+
+    Walks the AST for ``verb == <literal>`` and ``verb in <literals>``
+    comparisons, so quote style or a tuple-to-set refactor in the
+    dispatcher cannot silently drop verbs from this guard.
+    """
     src = (ROOT / "carlos_ctl" / "cli.py").read_text(encoding="utf-8")
-    verbs = set(re.findall(r'verb == "([a-z][a-z0-9-]*)"', src))
-    for group in re.findall(r"verb in \(([^)]*)\)", src):
-        verbs.update(re.findall(r'"([a-z][a-z0-9-]*)"', group))
+    verbs = set()
+    for node in ast.walk(ast.parse(src)):
+        if (
+            isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "verb"
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.Eq, ast.In))
+        ):
+            verbs.update(
+                child.value
+                for child in ast.walk(node.comparators[0])
+                if isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and re.fullmatch(r"[a-z][a-z0-9-]*", child.value)
+            )
     assert len(verbs) > 15, "dispatch parse failed — cli.py layout changed?"
     return verbs
 
