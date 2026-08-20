@@ -287,7 +287,7 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl check
 #      uca1400_ai_ci and collation-sensitive migrations abort with ERROR
 #      1267) and stops fail-fast at the first SQL error. From a
 #      github.com/carlos-emr/carlos checkout (Ontario shown; use
-#      migration/bc/ for BC):
+#      bc/ for BC):
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 cd database/mysql/migration
 sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
@@ -868,10 +868,24 @@ schema in an unknown partial state).
 plain client session may have stopped at V1.0.7 with `ERROR 1267` — its DDL
 applied, its backfill `INSERT`s not. CARLOS migrations are written
 re-runnable (IF-NOT-EXISTS DDL, existence-guarded backfills), so rerun the
-failed file and everything after it through `db-migrate`, e.g.
-`sudo carlos-ctl db-migrate common/V1.0.7__*.sql ... common/V1.0.13__*.sql`
-— the pinned session applies the aborted backfills and continues; files it
-already completed are guarded no-ops.
+failed file and every not-yet-applied file after it through one
+`db-migrate` invocation, listing them explicitly in version order per the
+upstream migration README — for example (Ontario, through the collation
+fix; check upstream for files added since):
+
+```bash
+sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
+    common/V1.0.7__restore_phcp_diagnosis_groups.sql \
+    common/V1.0.8__expand_appointment_type_location.sql \
+    common/V1.0.9__remove_carlosdoc_schedule_group_denial.sql \
+    common/V1.0.10__seed_default_measurement_groups.sql \
+    on/V1.0.11__billing_filename_unique_indexes.sql \
+    on/V1.0.12__portable_billing_filename_unique_indexes.sql \
+    common/V1.0.13__fix_phcp_diagnosis_group_backfill_collation.sql
+```
+
+The pinned sessions apply the aborted backfills and continue; files that
+already completed are guarded no-ops, so overshooting is safe.
 
 ## What changed vs. the old openo-app pod
 

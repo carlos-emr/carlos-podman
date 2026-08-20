@@ -559,16 +559,16 @@ files. Do not load both province data sets. The migration README in the CARLOS
 revision used for the image is authoritative because new migrations may be
 added after this document is published.
 
-Use `carlos-ctl db` for each file because the standard deployment does not
-publish MariaDB on a TCP port. Prefix each file with a `SET NAMES` that pins
-the session to the schema's `utf8mb4_general_ci` collation family (MariaDB
-11.4+ images default utf8mb4 sessions to `uca1400_ai_ci` via
-`character_set_collations`, which makes some upstream migrations abort with
-`ERROR 1267` when applied through the CLI):
+Apply them with `carlos-ctl db-migrate` (the standard deployment does not
+publish MariaDB on a TCP port). It runs each file in a client session pinned
+to the schema's `utf8mb4_general_ci` collation family (MariaDB 11.4+ images
+default utf8mb4 sessions to `uca1400_ai_ci` via `character_set_collations`,
+which makes some upstream migrations abort with `ERROR 1267` when applied
+through a plain CLI session) and stops fail-fast at the first SQL error:
 
 ```bash
-{ printf 'SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;\n'; cat path/to/migration.sql; } |
-  sudo EMR_HOME=/usr/local/emr carlos-ctl db oscar
+sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
+    path/to/first_migration.sql path/to/next_migration.sql
 ```
 
 Create and load `drugref2` using the procedure in the project guide's

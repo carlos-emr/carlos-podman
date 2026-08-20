@@ -11,16 +11,20 @@
 #      ship character_set_collations = utf8mb4=uca1400_ai_ci — leaving the
 #      database in the exact partially-migrated state the issue describes
 #      (DDL applied, backfills aborted).
-#   2. RECOVERY: `carlos-ctl db-migrate V1.0.7 V1.0.13` reruns V1.0.7 in a
-#      collation-pinned same-client session, continues to V1.0.13, and the
-#      PHCP diagnosis-group rows come out populated.
+#   2. RECOVERY: `carlos-ctl db-migrate V1.0.7 V1.0.13` reruns each file in
+#      its own collation-pinned client session (the pin rides --init-command
+#      in the SAME session that consumes that file's SQL), and the PHCP
+#      diagnosis-group rows come out populated.
 #   3. RERUNNABILITY: a second db-migrate pass is a no-op (the migrations'
 #      existence guards), so retrying after a transient failure is safe.
 #
 # Requires: root (the CLI's runuser service-user boundary), real podman,
 # and network (db image pull + migration download). Migration files come
 # from a local carlos checkout when CARLOS_MIGRATIONS_DIR is set, else from
-# raw.githubusercontent.com at CARLOS_MIGRATIONS_REF (default: develop).
+# raw.githubusercontent.com at CARLOS_MIGRATIONS_REF — defaulting to an
+# IMMUTABLE release tag (published tags are never moved and their Flyway
+# files never edited, per the app repo's release policy), so CI results
+# cannot drift with upstream branch changes.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,8 +39,17 @@ DB_IMAGE=$(grep -E '^carlos_db_image:' "$ROOT/ansible/roles/carlos_podman/defaul
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/carlos-dbmigrate-int.XXXXXX")"
 IHOME="$WORK/home"
 CTR="carlos-app-db"
+# NEVER touch a pre-existing container by this name: it is the DEPLOYMENT
+# db container name, and this root-required script force-removes $CTR on
+# cleanup — running it on a live CARLOS host must refuse, not kill the db.
+if podman container exists "$CTR" 2>/dev/null; then
+    echo "refusing to run: a container named $CTR already exists on this host"
+    echo "(this looks like a live deployment — this test only runs on disposable hosts/CI)"
+    exit 1
+fi
+CTR_CREATED=0
 cleanup() {
-    podman rm -f "$CTR" >/dev/null 2>&1 || true
+    [ "$CTR_CREATED" = 1 ] && podman rm -f "$CTR" >/dev/null 2>&1
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -61,8 +74,8 @@ chmod 0600 "$IHOME/container/carlos-app.env"
 ctl() { EMR_HOME="$IHOME" PYTHONPATH="$ROOT" python3 -m carlos_ctl.cli "$@"; }
 
 echo "== starting $DB_IMAGE as $CTR"
-podman rm -f "$CTR" >/dev/null 2>&1 || true
 podman run -d --name "$CTR" -e MYSQL_ROOT_PASSWORD="$DB_PW" "$DB_IMAGE" >/dev/null
+CTR_CREATED=1
 
 echo "== waiting for the server to accept root connections"
 for _ in $(seq 1 90); do
@@ -102,7 +115,9 @@ V13=V1.0.13__fix_phcp_diagnosis_group_backfill_collation.sql
 if [ -n "${CARLOS_MIGRATIONS_DIR:-}" ]; then
     cp "$CARLOS_MIGRATIONS_DIR/common/$V7" "$CARLOS_MIGRATIONS_DIR/common/$V13" "$MIG/"
 else
-    REF="${CARLOS_MIGRATIONS_REF:-develop}"
+    # Immutable tag: release tags are never moved and Flyway files in
+    # published tags are never edited, so this stays byte-identical forever.
+    REF="${CARLOS_MIGRATIONS_REF:-2026.08.0-alpha3}"
     BASE="https://raw.githubusercontent.com/carlos-emr/carlos/$REF/database/mysql/migration/common"
     curl -fsSL --retry 3 -o "$MIG/$V7" "$BASE/$V7"
     curl -fsSL --retry 3 -o "$MIG/$V13" "$BASE/$V13"

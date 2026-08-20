@@ -704,7 +704,9 @@ assert "re-auth failure left the previous passwords in place" \
 # schema's utf8mb4_general_ci family — MariaDB 11.4+ session defaults
 # (uca1400_ai_ci) make V1.0.7's bare CAST(... AS CHAR) comparison die with
 # ERROR 1267, and a SET NAMES issued by a PREVIOUS carlos-ctl db process
-# never reaches the next client session. db-migrate rides --init-command.
+# never reaches the next client session. db-migrate starts one client per
+# file with --init-command, so the pin rides the same session that
+# consumes that file's SQL.
 HDM="$WORK/h-dbmigrate"; mk_home "$HDM"
 DMDIR="$WORK/migrations"; mkdir -p "$DMDIR"
 printf -- '-- v7\nSELECT 7;\n' > "$DMDIR/V1.0.7__restore_phcp.sql"
@@ -713,9 +715,9 @@ m=$(mark)
 assert "db-migrate applies the migration files" \
     ctle "$HDM" STUB_PS="carlos-app-db" -- db-migrate \
         "$DMDIR/V1.0.7__restore_phcp.sql" "$DMDIR/V1.0.13__fix_collation.sql"
-assert "the collation pin rides the SAME client session (--init-command)" \
+assert "the collation pin rides each file's OWN client session (--init-command)" \
     log_since "$m" -e "--init-command=SET NAMES utf8mb4 COLLATE utf8mb4_general_ci"
-assert "both files' SQL was streamed into the pinned session" \
+assert "each file's SQL was streamed through a pinned session" \
     bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q 'SELECT 7;' \
         && tail -n +$((m + 1)) '$STUBLOG' | grep -q 'SELECT 13;'"
 assert "the root password rode off-argv (forwarded by name)" \
