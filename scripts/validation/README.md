@@ -25,7 +25,8 @@ which remain the CI gate.
   `ratelimit-half`, `dr-ratelimit-half` for a second-app failure after the
   first resolved, and `deny` — every request 503s, a true "API
   unavailable" for the offline assertions).
-- `ctl-validation.sh` — the checks (~44), covering: every `source` subverb
+- `ctl-validation.sh` — the checks (dozens; the script's pass/fail summary
+  reports the exact count), covering: every `source` subverb
   against the mock, sticky-pin persistence and offline builds, pin-file
   corruption/implausibility warnings, the mutating-verb lock, full real
   `carlos-ctl build` of both apps from pinned WARs, tampered-sha256 refusal

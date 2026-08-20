@@ -269,10 +269,15 @@ Setup complete. Next (QUICKSTART.md steps 2 and 4-6):
   4. log in at https://127.0.0.1:8443/ and complete the forced password
      reset for the seeded dev account IMMEDIATELY (see QUICKSTART step 6)
   5. (optional) for the app repo's Playwright suite, give the host mysql
-     client a path to the pod's DB socket (needs root; skip if a host
-     MariaDB owns the path — use 'podman exec' instead):
+     client a path to the pod's DB socket (needs root; refuses to replace
+     an existing socket path — if a host MariaDB owns it, use 'podman exec'
+     instead):
        sudo mkdir -p /var/run/mysqld
-       sudo ln -sf $EMR_HOME/run/db-socket/mysqld.sock /var/run/mysqld/mysqld.sock
+       if [ -e /var/run/mysqld/mysqld.sock ] || [ -L /var/run/mysqld/mysqld.sock ]; then
+         echo 'Refusing to replace the existing MariaDB socket path' >&2
+       else
+         sudo ln -s $EMR_HOME/run/db-socket/mysqld.sock /var/run/mysqld/mysqld.sock
+       fi
      then run it with MYSQL_HOST=localhost (see QUICKSTART step 6's
      Playwright notes)
 EOF

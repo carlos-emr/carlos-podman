@@ -13,11 +13,18 @@ version = "2.0.0-beta2"
 description = "CARLOS EMR podman deployment: host runtime CLI (lifecycle, secrets, backup, monitoring)"
 readme = "README.md"
 requires-python = ">=3.9"
+# The table form keeps setuptools' floor where EL9-era toolchains can build
+# an editable install; the SPDX-string form needs setuptools >= 77.
 license = { text = "AGPL-3.0-only" }
+authors = [{ name = "CARLOS Contributors" }]
 dependencies = [
     "PyYAML>=5.4",
     "bcrypt>=3.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/carlos-emr/carlos-podman"
+Issues = "https://github.com/carlos-emr/carlos-podman/issues"
 
 [project.scripts]
 carlos-ctl = "carlos_ctl.cli:main"

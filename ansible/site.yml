@@ -8,8 +8,10 @@
 #   sudo ansible-playbook -i inventory site.yml --check --diff   # drift review
 #
 # Control-node requirements: ansible-core, passlib (bcrypt hashing for the
-# log-view credential), netaddr (ansible.utils IP filters):
-#   pip install ansible-core passlib netaddr && ansible-galaxy collection install ansible.utils
+# log-view credential) with the MANDATORY bcrypt<4.1 pin (passlib 1.7.4
+# breaks against bcrypt>=4.1 — the role's own G1 assert fails without it),
+# netaddr (ansible.utils IP filters):
+#   pip install ansible-core passlib 'bcrypt<4.1' netaddr && ansible-galaxy collection install ansible.utils
 ---
 - name: Provision CARLOS EMR instances
   hosts: all
