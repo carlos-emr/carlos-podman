@@ -699,6 +699,38 @@ refute "db-users fails when the new credentials do not re-authenticate" \
 assert "re-auth failure left the previous passwords in place" \
     grep -q '^db_password=x$' "$HDU3/container/conf/carlos/carlos.properties"
 
+# =============================== db-migrate =======================================
+# Issue #17: CARLOS migrations must run in a client session pinned to the
+# schema's utf8mb4_general_ci family — MariaDB 11.4+ session defaults
+# (uca1400_ai_ci) make V1.0.7's bare CAST(... AS CHAR) comparison die with
+# ERROR 1267, and a SET NAMES issued by a PREVIOUS carlos-ctl db process
+# never reaches the next client session. db-migrate rides --init-command.
+HDM="$WORK/h-dbmigrate"; mk_home "$HDM"
+DMDIR="$WORK/migrations"; mkdir -p "$DMDIR"
+printf -- '-- v7\nSELECT 7;\n' > "$DMDIR/V1.0.7__restore_phcp.sql"
+printf -- '-- v13\nSELECT 13;\n' > "$DMDIR/V1.0.13__fix_collation.sql"
+m=$(mark)
+assert "db-migrate applies the migration files" \
+    ctle "$HDM" STUB_PS="carlos-app-db" -- db-migrate \
+        "$DMDIR/V1.0.7__restore_phcp.sql" "$DMDIR/V1.0.13__fix_collation.sql"
+assert "the collation pin rides the SAME client session (--init-command)" \
+    log_since "$m" -e "--init-command=SET NAMES utf8mb4 COLLATE utf8mb4_general_ci"
+assert "both files' SQL was streamed into the pinned session" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q 'SELECT 7;' \
+        && tail -n +$((m + 1)) '$STUBLOG' | grep -q 'SELECT 13;'"
+assert "the root password rode off-argv (forwarded by name)" \
+    log_since "$m" "forwarded-env MYSQL_PWD=test-root-pw"
+m=$(mark)
+refute "db-migrate is fail-fast on the first SQL error (no --force)" \
+    ctle "$HDM" STUB_PS="carlos-app-db" STUB_MIGRATE_FAIL=1 -- db-migrate \
+        "$DMDIR/V1.0.7__restore_phcp.sql" "$DMDIR/V1.0.13__fix_collation.sql"
+refute "the second file was NOT attempted after the failure" \
+    bash -c "tail -n +$((m + 1)) '$STUBLOG' | grep -q 'SELECT 13;'"
+refute "db-migrate refuses a missing file up front (nothing applied)" \
+    ctle "$HDM" STUB_PS="carlos-app-db" -- db-migrate "$DMDIR/nope.sql"
+refute "db-migrate refuses when the db container is not running" \
+    ctle "$HDM" STUB_PS="" -- db-migrate "$DMDIR/V1.0.7__restore_phcp.sql"
+
 # ============================ db-backup argument contract ===========================
 # db-backup writes a PLAINTEXT-PHI physical copy of the datadir into a
 # directory named from argv. Pass 14: it read args[0] and DROPPED the rest,

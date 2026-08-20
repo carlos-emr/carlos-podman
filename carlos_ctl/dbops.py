@@ -578,6 +578,77 @@ def cmd_db(runner: Runner, args: List[str]) -> int:
     )
 
 
+# db-migrate pins the client session because CARLOS' schema is
+# utf8mb4_general_ci while MariaDB 11.4+ images ship
+# character_set_collations = utf8mb4=uca1400_ai_ci: under that session
+# default a bare CAST(... AS CHAR) takes the uca1400 collation, and
+# collation-sensitive migrations (V1.0.7's dxphcpgroup backfill join) abort
+# with ERROR 1267 (illegal mix of collations). The pin must be established
+# in the SAME client session that executes the migration — a separate
+# `carlos-ctl db -e 'SET NAMES ...'` runs in its own client process, so its
+# session settings never reach the next one. --init-command also re-fires
+# on client reconnects, unlike a first-line SET NAMES prepended to stdin.
+MIGRATION_SESSION_PIN = "SET NAMES utf8mb4 COLLATE utf8mb4_general_ci"
+
+
+def cmd_db_migrate(runner: Runner, args: List[str]) -> int:
+    """Apply schema migration files in argv order through a root mariadb
+    session pinned to the schema's utf8mb4_general_ci collation family
+    (see MIGRATION_SESSION_PIN). Fail-fast on the first failing file — NO
+    --force: continuing past an arbitrary SQL error would leave the schema
+    in an unknown partial state. Earlier files are fully applied and later
+    ones untouched, so recovery is: fix the cause, then rerun starting at
+    the failed file (CARLOS migrations are written re-runnable — CREATE/ADD
+    ... IF NOT EXISTS DDL and existence-guarded backfills)."""
+    usage = "usage: carlos-ctl db-migrate [--db <database>] <file.sql> [more.sql ...]"
+    s = runner.settings
+    db = "oscar"
+    files = list(args)
+    if files[:1] == ["--db"]:
+        if len(files) < 2:
+            raise CtlError(usage)
+        db = files[1]
+        files = files[2:]
+    # Refuse flag-shaped leftovers instead of piping them to the client as
+    # filenames (same no-silently-dropped-arguments contract as db-backup).
+    if not files or any(f.startswith("-") for f in files):
+        raise CtlError(usage)
+    paths = [Path(f) for f in files]
+    # Validate the WHOLE list before touching the database: a typo'd later
+    # filename must fail the run up front, not strand the sequence half-way.
+    missing = [str(p) for p in paths if not p.is_file()]
+    if missing:
+        raise CtlError(
+            f"migration file(s) not found: {', '.join(missing)} — nothing was applied"
+        )
+    runner.require_db_running()
+    root_pw = s.get("CARLOS_DB_ROOT_PASSWORD")
+    if not root_pw:
+        raise CtlError(
+            f"no CARLOS_DB_ROOT_PASSWORD in {s.env_file} — db-migrate streams SQL on "
+            f"stdin, so the client's interactive -p prompt cannot be used; set the "
+            f"password in the mode-600 env file"
+        )
+    for i, path in enumerate(paths):
+        log(f"Applying {path.name} to database '{db}' (collation-pinned session)")
+        with path.open("rb") as fh:
+            cp = runner.podman_user(
+                ["exec", "-i", "-e", "MYSQL_PWD", f"{s.app_pod}-db", "mariadb",
+                 "-uroot", f"--init-command={MIGRATION_SESSION_PIN}", db],
+                env={"MYSQL_PWD": root_pw}, stdin=fh,
+            )
+        if cp.returncode != 0:
+            remaining = ", ".join(p.name for p in paths[i + 1:]) or "(none)"
+            raise CtlError(
+                f"{path.name} failed (mariadb exit {cp.returncode}) — stopping "
+                f"fail-fast. Earlier files are fully applied; {path.name} may be "
+                f"partially applied (CARLOS migrations are re-runnable — rerun it "
+                f"once the cause is fixed), then continue with: {remaining}"
+            )
+    log(f"Applied {len(paths)} migration file(s) to database '{db}'")
+    return 0
+
+
 def cmd_db_dump(runner: Runner, args: List[str]) -> int:
     """Consistent one-off export to stdout (the same flag set the nightly
     backup uses: single InnoDB snapshot, safe on a running database)."""

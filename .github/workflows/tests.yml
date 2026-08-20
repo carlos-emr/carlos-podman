@@ -63,16 +63,32 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       - name: bash syntax (harness + stubs)
         run: |
-          bash -n tests/run-tests.sh tests/ansible-checks.sh
+          bash -n tests/run-tests.sh tests/ansible-checks.sh tests/db-migrate-integration.sh
           for f in tests/stubs/*; do bash -n "$f"; done
       - name: shellcheck (enforcing)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck -S warning tests/run-tests.sh tests/ansible-checks.sh tests/stubs/*
+          shellcheck -S warning tests/run-tests.sh tests/ansible-checks.sh \
+            tests/db-migrate-integration.sh tests/stubs/*
       - name: python deps for the CLI under test
         run: sudo apt-get install -y -qq python3-yaml python3-bcrypt
       - name: hermetic e2e suite
         run: sudo tests/run-tests.sh
+
+  # Issue #17: the hermetic e2e suite pins db-migrate's argv/stdin contract;
+  # this job proves the collation semantics on a REAL MariaDB 11.4+ server —
+  # the unpinned-utf8mb4 ERROR 1267 repro on the actual V1.0.7 migration,
+  # recovery through the pinned session, and populated PHCP rows.
+  db-migrate-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: install podman and CLI deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman python3-yaml python3-bcrypt
+      - name: collation-safe migration path against real MariaDB 11.4+
+        run: sudo tests/db-migrate-integration.sh
 
   ansible:
     runs-on: ubuntu-latest

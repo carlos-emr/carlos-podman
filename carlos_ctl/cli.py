@@ -59,6 +59,8 @@ OPERATIONS:
 
 DATA & BREAK-GLASS:
   db [args]             mariadb shell in the db container (root)
+  db-migrate [--db <database>] <file.sql>...  apply schema migrations in order
+                        (root session pinned to utf8mb4_general_ci; fail-fast)
   db-dump [database...] consistent mariadb-dump to stdout
   db-backup [name]      mariadb-backup physical snapshot (--prepare'd)
   pma [--ttl <minutes>] on-demand phpMyAdmin on 127.0.0.1:<PMA_PORT> (default 120m ttl)
@@ -86,7 +88,7 @@ playbook); environment variables provide defaults for anything unset there.
 # first — the #1 footgun on a multi-instance host is mutating the wrong one.
 _MUTATING = {
     "build", "rebuild", "play", "rollback", "down", "enable", "cert-renew",
-    "db-backup", "db-users", "seal", "rotate", "uninstall",
+    "db-backup", "db-migrate", "db-users", "seal", "rotate", "uninstall",
 }
 
 
@@ -230,10 +232,11 @@ def _dispatch(verb: str, args: List[str], runner: Runner) -> int:
     if verb == "alert-test":
         from . import alert
         return alert.cmd_alert_test(runner)
-    if verb in ("db", "db-dump", "db-backup", "pma", "db-users"):
+    if verb in ("db", "db-migrate", "db-dump", "db-backup", "pma", "db-users"):
         from . import dbops
         table = {
             "db": lambda: dbops.cmd_db(runner, args),
+            "db-migrate": lambda: dbops.cmd_db_migrate(runner, args),
             "db-dump": lambda: dbops.cmd_db_dump(runner, args),
             "db-backup": lambda: dbops.cmd_db_backup(runner, args),
             "pma": lambda: dbops.cmd_pma(runner, args),

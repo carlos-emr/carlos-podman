@@ -35,6 +35,14 @@ fi
 if [[ " $* " == *" -e RESTIC_PASSWORD "* ]]; then
     echo "forwarded-env RESTIC_PASSWORD=${RESTIC_PASSWORD:-}" >> "$LOG"
 fi
+# db-migrate execs carry --init-command=<session pin> (issue #17): record the
+# stdin SQL so the harness can assert the migration content reached the client
+# in the SAME pinned session; STUB_MIGRATE_FAIL drives the fail-fast leg.
+if [[ "$*" == *"--init-command="* ]]; then
+    { echo "--- migrate stdin:"; [ ! -t 0 ] && cat; } >> "$LOG"
+    [[ -n "${STUB_MIGRATE_FAIL:-}" ]] && exit 1
+    exit 0
+fi
 # Simulate the provisioning SQL step failing mid-run (STUB_SQL_FAIL): only the
 # bare `mariadb -uroot` root-shell exec (SQL fed on stdin) fails; probes with
 # explicit `-e <query>` argv still succeed, so db-readiness passes first.

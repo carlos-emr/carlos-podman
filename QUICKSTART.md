@@ -364,6 +364,14 @@ For British Columbia, follow the ordering in
 migrations for the `on/` files. Always check that upstream README for migration
 files added after this guide.
 
+Under the full Ansible deployment, the supported equivalent is
+`sudo carlos-ctl db-migrate <file.sql>...` — it establishes the same
+`SET NAMES utf8mb4 COLLATE utf8mb4_general_ci` pin in the same client session
+via `--init-command` (the pin must ride the session that executes the SQL; a
+prior standalone `SET NAMES` client run does not carry over) and stops
+fail-fast on the first SQL error. See the README's Schema section for the
+`ERROR 1267` background and the V1.0.7 recovery procedure.
+
 Restart the application container after the schema load so Tomcat opens the
 new database cleanly:
 
