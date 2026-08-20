@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-# Ansible role checks: syntax, lint, a full localhost check-mode render into a
-# temp prefix, second-run idempotency, and the obs-profile toggle round trip
-# (on -> off -> on). Needs ansible-core (+ passlib, netaddr, ansible.utils) on
-# the runner — skipped with a notice when ansible-playbook is absent so the
+# Ansible role checks. The core legs: syntax, lint, a full localhost
+# check-mode render into a temp prefix (both obs profiles, token-free
+# output), second-run idempotency, and the obs-profile toggle round trip
+# (on -> off -> on). Around those, focused render legs pin the role's edge
+# behavior: cross-instance collision asserts, the TLS modes, the host
+# firewall + front-door NAT rules, obs/log-view credential character
+# handling, PIN-encryption derivation, sidecar-config parsing, and a
+# render->CLI lockstep pass (the CLI reads what the role rendered). Needs
+# ansible-core (+ passlib with bcrypt<4.1, netaddr, ansible.utils) on the
+# runner — skipped with a notice when ansible-playbook is absent so the
 # hermetic CLI suite stays runnable anywhere.
 set -euo pipefail
 

@@ -2,10 +2,11 @@
 <!-- Copyright (C) 2026 CARLOS Contributors -->
 # Quick start: deploy CARLOS with rootless Podman
 
-> **Status: alpha.** carlos-podman is new and deployment procedures may change.
-> Two installation paths are documented below. A site considering production
-> use must complete its own technical, security, privacy, backup, restore, and
-> regulatory review before using the system with patient information.
+> **Status: pre-production.** carlos-podman is under active development and
+> its interfaces and deployment procedures may change. A site considering
+> production use must complete its own technical, security, privacy, backup,
+> restore, and regulatory review before using the system with patient
+> information. Two installation paths are documented below.
 
 This guide covers:
 
@@ -16,6 +17,20 @@ This guide covers:
 The sample path runs MariaDB and CARLOS in one rootless Podman pod and publishes
 the application only on `127.0.0.1:8443`. It is useful for learning the
 container workflow before configuring a standard environment.
+
+## Contents
+
+- [Choose a deployment path](#choose-a-deployment-path)
+- [1. Install and check the host tools](#1-install-and-check-the-host-tools)
+- [2. Obtain the application image](#2-obtain-the-application-image)
+- [3. Create the development configuration](#3-create-the-development-configuration)
+- [4. Start the pod](#4-start-the-pod)
+- [5. Load the database schema](#5-load-the-database-schema)
+- [6. Open CARLOS and complete the first login](#6-open-carlos-and-complete-the-first-login)
+- [Stop and restart the development instance](#stop-and-restart-the-development-instance)
+- [Remove the development instance](#remove-the-development-instance)
+- [Standard Ontario or British Columbia deployment](#standard-ontario-or-british-columbia-deployment)
+- [Troubleshooting (sample path)](#troubleshooting-sample-path)
 
 ## Choose a deployment path
 
@@ -118,7 +133,7 @@ session before continuing.
 the packaged device rule normally configures this automatically. Fix the host
 udev or device permissions if the check prints nothing.
 
-## 2. Build the application image
+## 2. Obtain the application image
 
 Clone this repository if you have not already done so:
 
@@ -129,15 +144,16 @@ cd carlos-podman
 
 CARLOS publishes GitHub releases, and a release usually ships a prebuilt
 `carlos-<tag>.war` — using it skips the long Maven compile. List the releases
-and pick the newest one (the full Ansible deployment automates exactly this
-policy; see the README's "Choosing the CARLOS and DrugRef versions"):
+and pick the newest one — the full Ansible deployment automates exactly this
+policy; see the project guide's
+[Choosing the CARLOS and DrugRef versions](README.md#choosing-the-carlos-and-drugref-versions):
 
 ```bash
 curl -s https://api.github.com/repos/carlos-emr/carlos/releases \
   | grep -E '"(tag_name|prerelease)"'
 ```
 
-**Path 0 — pull the prebuilt image (fastest, no build at all).** App
+**Option 1 — pull the prebuilt image (fastest, no build at all).** App
 releases get a prebuilt multi-arch image on ghcr.io when a maintainer
 dispatches this repo's *Publish Images* workflow for them (manual, per
 release — a brand-new release may not have its image yet). Pull it **by
@@ -149,16 +165,27 @@ podman pull ghcr.io/carlos-emr/carlos-app@sha256:<digest>
 podman tag  ghcr.io/carlos-emr/carlos-app@sha256:<digest> localhost/carlos-app:latest
 ```
 
-Under the full deployment this is `<APP>_ARTIFACT=image` — see the README's
-"Prebuilt images" subsection for the trust model and air-gap channel. To
-build locally instead:
+Also record the release's source commit — step 5 checks out the matching
+migration files with it:
 
-**Path A — a release publishes a WAR (preferred).** Record its tag, source
+```bash
+CARLOS_TAG=2026.08.0-alpha4     # the release tag whose image you pulled
+CARLOS_SHA=$(curl -s "https://api.github.com/repos/carlos-emr/carlos/commits/$CARLOS_TAG" \
+  | grep -m1 '"sha"' | cut -d'"' -f4)
+test -n "$CARLOS_SHA" && printf 'Image release %s = commit %s\n' "$CARLOS_TAG" "$CARLOS_SHA"
+```
+
+Under the full deployment this is `<APP>_ARTIFACT=image` — see the project
+guide's [Prebuilt images](README.md#prebuilt-images-app_artifactimage)
+subsection for the trust model and air-gap channel. To build locally
+instead:
+
+**Option 2 — build from a release WAR (preferred build).** Record its tag, source
 commit, and the WAR's sha256 (from the sibling `.war.sha256` asset), then
 build with the download stage:
 
 ```bash
-CARLOS_TAG=2026.08.0-alpha1     # the newest release tag you picked
+CARLOS_TAG=2026.08.0-alpha4     # the newest release tag you picked
 CARLOS_SHA=$(curl -s "https://api.github.com/repos/carlos-emr/carlos/commits/$CARLOS_TAG" \
   | grep -m1 '"sha"' | cut -d'"' -f4)
 WAR_URL="https://github.com/carlos-emr/carlos/releases/download/$CARLOS_TAG/carlos-$CARLOS_TAG.war"
@@ -177,7 +204,7 @@ podman build --no-cache --ulimit nofile=65536:65536 \
 The WAR is verified against its sha256 inside the build; a mismatch fails the
 build.
 
-**Path B — compile from source.** Use this when no release exists (build the
+**Option 3 — compile from source.** Use this when no release exists (build the
 `main` branch HEAD — the stable branch `develop` is promoted into for
 release — as shown) or
 when you want to compile a release's own source (set `CARLOS_SHA` to the
@@ -227,6 +254,9 @@ For a British Columbia test instance, run:
 ```bash
 scripts/dev-setup.sh --province BC
 ```
+
+(`--server-name NAME` sets the rendered server name when you need something
+other than the default; `scripts/dev-setup.sh --help` lists every flag.)
 
 For a different instance directory, pass an absolute path and keep the same
 value in later commands:
@@ -298,9 +328,9 @@ cd carlos-podman
 ```
 
 For reproducible results, check out the same commit used for the image build
-(`$CARLOS_SHA` from step 2 — for a WAR-path build that is the release's
-source commit; under the full Ansible deployment `carlos-ctl source` prints
-the pinned tag and commit):
+(`$CARLOS_SHA` from step 2 — for Options 1 and 2 that is the release's
+source commit, for Option 3 the branch commit you resolved; under the full
+Ansible deployment `carlos-ctl source` prints the pinned tag and commit):
 
 ```bash
 cd ../carlos
@@ -344,7 +374,14 @@ MIGRATIONS=../carlos/database/mysql/migration
     common/V1.0.3__performance_indexes.sql \
     on/V1.0.4__on_performance_indexes.sql \
     common/V1.0.5__restore_live_legacy_common_tables.sql \
-    on/V1.0.6__restore_reporting_privilege.sql
+    on/V1.0.6__restore_reporting_privilege.sql \
+    common/V1.0.7__restore_phcp_diagnosis_groups.sql \
+    common/V1.0.8__expand_appointment_type_location.sql \
+    common/V1.0.9__remove_carlosdoc_schedule_group_denial.sql \
+    common/V1.0.10__seed_default_measurement_groups.sql \
+    on/V1.0.11__billing_filename_unique_indexes.sql \
+    on/V1.0.12__portable_billing_filename_unique_indexes.sql \
+    common/V1.0.13__fix_phcp_diagnosis_group_backfill_collation.sql
   do
     printf 'Applying %s\n' "$file"
     { printf '%s\n' "$DB_PW"
@@ -359,18 +396,26 @@ unset DB_PW
 test "$MIGRATION_RC" -eq 0
 ```
 
-For British Columbia, follow the ordering in
-`../carlos/database/mysql/migration/README.md` and substitute the `bc/`
-migrations for the `on/` files. Always check that upstream README for migration
+The list is current through V1.0.13. For British Columbia, follow the
+ordering in `../carlos/database/mysql/migration/README.md`: use the `bc/`
+twins of V1.0.1/V1.0.2/V1.0.6 and drop the Ontario-only
+V1.0.4/V1.0.11/V1.0.12. Always check that upstream README for migration
 files added after this guide.
+
+One caveat on this loop: the prepended `SET NAMES` line pins the session
+only until the client disconnects — unlike `carlos-ctl db-migrate`'s
+`--init-command`, it does not re-fire if the client reconnects mid-file.
+That is fine for these migrations (each file runs in one connection), but
+`db-migrate` remains the supported path.
 
 Under the full Ansible deployment, the supported equivalent is
 `sudo carlos-ctl db-migrate <file.sql>...` — it establishes the same
 `SET NAMES utf8mb4 COLLATE utf8mb4_general_ci` pin in the same client session
 via `--init-command` (the pin must ride the session that executes the SQL; a
 prior standalone `SET NAMES` client run does not carry over) and stops
-fail-fast on the first SQL error. See the README's Schema section for the
-`ERROR 1267` background and the V1.0.7 recovery procedure.
+fail-fast on the first SQL error. See the project guide's
+[Schema section](README.md#schema) for the `ERROR 1267` background and the
+V1.0.7 recovery procedure.
 
 Restart the application container after the schema load so Tomcat opens the
 new database cleanly:
@@ -397,7 +442,9 @@ The development certificate is self-signed, so the browser will display a
 certificate warning. Confirm that the address is exactly `127.0.0.1:8443`
 before accepting the warning.
 
-The Ontario development data provides this initial account:
+The Ontario development data seeds this initial account (development data
+only — production deployments ship no default credentials; see the project
+guide's [First login](README.md#first-login)):
 
 - username: `carlosdoc`
 - password: `carlos2026`
@@ -430,6 +477,42 @@ top of `scripts/login-playwright-checks.js` and the repository's
 [development deployment notes](docs/development-notes.md#run-the-optional-playwright-checks).
 It is not required to complete this quick start.
 
+## Stop and restart the development instance
+
+Stop and remove the pod while keeping the database and configuration files:
+
+```bash
+podman kube down "$EMR_HOME/carlos-app-dev.yaml"
+```
+
+Start it again later:
+
+```bash
+podman kube play "$EMR_HOME/carlos-app-dev.yaml"
+```
+
+The MariaDB data, documents, and logs remain under `$EMR_HOME`. The database
+root-password hash in the pod secret is used only when MariaDB initializes an
+empty data directory. Re-rendering the YAML does not change the password of an
+existing database.
+
+## Remove the development instance
+
+This permanently deletes the development database and its files:
+
+```bash
+podman kube down "$EMR_HOME/carlos-app-dev.yaml" || true
+podman secret rm carlos-db-secret 2>/dev/null || true
+printf 'Review before deleting: %s\n' "$EMR_HOME"
+```
+
+After confirming that `EMR_HOME` points to the disposable development
+instance, remove it manually:
+
+```bash
+rm -rf -- "$EMR_HOME"
+```
+
 ## Standard Ontario or British Columbia deployment
 
 The standard path uses Ansible to provision the complete three-pod topology on
@@ -437,8 +520,8 @@ a target host. It supports a new ON or BC database and adoption of an existing
 OpenO/OSCAR database. Unlike the sample path, it configures the WAF, DrugRef,
 monitoring, scheduled backups, systemd units, and secret management.
 
-Because carlos-podman is alpha software, these steps are not a production
-certification. Before using patient information, the organization operating the
+Because carlos-podman is pre-production software, these steps are not a
+production certification. Before using patient information, the organization operating the
 system must review and test the deployment, including access controls, TLS,
 network exposure, backup destinations, restore procedures, alert delivery,
 host hardening, and applicable privacy requirements.
@@ -480,7 +563,7 @@ python3 -m carlos_ctl.cli setup
 ```
 
 When prompted for **Billing province**, choose `ON` for Ontario or `BC` for
-British Columbia. The wizard writes
+British Columbia (`generic` exists for non-provincial evaluation). The wizard writes
 `ansible/host_vars/<instance-name>.yml`. The instance name must match the name
 in `ansible/inventory`.
 
@@ -530,8 +613,9 @@ The first `build` resolves the newest CARLOS **and** DrugRef GitHub releases
 (preferring each release's published, sha256-verified WAR over a source
 compile), prints what it chose, and pins both — later builds stay on those
 pins until `carlos-ctl source update`. `carlos-ctl source` shows the pins;
-the README's "Choosing the CARLOS and DrugRef versions" section covers
-manual pinning (including tracking a development branch deliberately) and
+the project guide's
+[Choosing the CARLOS and DrugRef versions](README.md#choosing-the-carlos-and-drugref-versions)
+section covers manual pinning (including tracking a development branch deliberately) and
 air-gapped hosts.
 
 On a new database, the first `play` is expected to return nonzero after starting
@@ -544,9 +628,14 @@ Skip this subsection when adopting an existing OpenO/OSCAR database. Follow the
 migration adoption instructions in the CARLOS source repository instead, and
 test the upgrade against a restorable copy before using the existing data.
 
-For a new database, clone the CARLOS source and check
-`database/mysql/migration/README.md` for the current migration order. Create the
-`oscar` database through the local container boundary:
+For a new database, clone the CARLOS source and check out the exact release
+the deployment runs — `sudo EMR_HOME=/usr/local/emr carlos-ctl source` prints
+the pinned tag and commit; `git checkout <that tag>` — so the migrations you
+apply match the deployed WAR (a default-branch checkout can carry migrations
+newer than the application). Then check
+`database/mysql/migration/README.md` in that checkout for the current
+migration order, and create the `oscar` database through the local container
+boundary:
 
 ```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e \
@@ -600,43 +689,11 @@ planned, and review the remaining site-specific settings listed by the setup
 wizard. The detailed operational and recovery procedures are in the
 [project guide](README.md).
 
-## Stop and restart the development instance
+## Troubleshooting (sample path)
 
-Stop and remove the pod while keeping the database and configuration files:
-
-```bash
-podman kube down "$EMR_HOME/carlos-app-dev.yaml"
-```
-
-Start it again later:
-
-```bash
-podman kube play "$EMR_HOME/carlos-app-dev.yaml"
-```
-
-The MariaDB data, documents, and logs remain under `$EMR_HOME`. The database
-root-password hash in the pod secret is used only when MariaDB initializes an
-empty data directory. Re-rendering the YAML does not change the password of an
-existing database.
-
-## Remove the development instance
-
-This permanently deletes the development database and its files:
-
-```bash
-podman kube down "$EMR_HOME/carlos-app-dev.yaml" || true
-podman secret rm carlos-db-secret 2>/dev/null || true
-printf 'Review before deleting: %s\n' "$EMR_HOME"
-```
-
-After confirming that `EMR_HOME` points to the disposable development
-instance, remove it manually:
-
-```bash
-rm -rf -- "$EMR_HOME"
-```
-
-## Troubleshooting
+The entries below cover the development pod. For a standard deployment,
+use the project guide's [Troubleshooting](README.md#troubleshooting)
+section and the [Alert → response runbook](README.md#alert--response-runbook).
 
 ### The build reports `Too many open files`
 

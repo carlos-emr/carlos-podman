@@ -12,9 +12,13 @@
 #
 # The suite fabricates an ANSIBLE-RENDERED instance home (the playbook's
 # output contract) and drives the CLI against it — asserting the go-live
-# gates, the data-plane fail-closed guards, the secrets flows, and the
-# off-argv credential discipline (stubs record forwarded-env values so a
-# secret reaching a container without ever being an argv token is provable).
+# gates, the data-plane fail-closed guards, the secrets flows, the off-argv
+# credential discipline (stubs record forwarded-env values so a secret
+# reaching a container without ever being an argv token is provable), the
+# release-first source selection against the curl stub's GitHub API
+# (STUB_GH_RELEASES/STUB_GH_DOWN: resolution, sticky pins, offline
+# behavior, prebuilt-image mode), and db-migrate's argv/stdin contract
+# (per-file --init-command collation pin, ordering, fail-fast).
 #
 # NOT covered here (by design): the Ansible role's own rendering/idempotency
 # (tests/ansible-checks.sh), pure-logic behaviors (pytest, tests/unit/), and

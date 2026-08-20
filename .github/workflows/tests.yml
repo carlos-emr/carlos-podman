@@ -1,17 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-# CI for carlos-podman:
-#   - lint + types + unit tests for the carlos_ctl Python CLI (3.9 = the EL9
-#     production floor pyproject declares, + a current interpreter)
-#   - the hermetic e2e suite (stubs for podman/systemctl/sops/…; nothing
+# CI for carlos-podman (five jobs):
+#   - python: lint + types + unit tests for the carlos_ctl CLI (3.9 = the
+#     EL9 production floor pyproject declares, + a current interpreter)
+#   - e2e: the hermetic suite (stubs for podman/systemctl/sops/…; nothing
 #     outside a throwaway workdir is touched). Runs under sudo: production
 #     carlos-ctl runs as root and several paths (/run tmpfs staging) are
 #     root-gated.
-#   - the Ansible role checks (syntax, lint, --check drift review, render/
-#     idempotency/obs-toggle, sibling-collision asserts)
-#   - Containerfile validation (BuildKit --check): parse + rule lint without
-#     executing the build — an ENV-before-FROM class mistake must fail CI,
-#     not the first production `carlos-ctl build`.
+#   - db-migrate-integration: the collation contract against a REAL
+#     MariaDB 11.4+ server (issue #17) — repro, recovery, rerunnability
+#   - ansible: the role checks (syntax, lint, --check drift review, render/
+#     idempotency/obs-toggle, sibling-collision asserts, TLS/firewall/
+#     credential render legs)
+#   - containerfiles: BuildKit --check validation — parse + rule lint
+#     without executing the build; an ENV-before-FROM class mistake must
+#     fail CI, not the first production `carlos-ctl build`.
 #
 # Actions are pinned to commit SHAs, not tags, for the same reason the
 # Containerfiles digest-pin base images: a re-pushed tag must never change
