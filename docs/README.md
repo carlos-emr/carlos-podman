@@ -16,6 +16,9 @@ The project documentation is organized by audience:
 - [Example inventory](../ansible/inventory.example) and
   [example application manifest](../examples/carlos-app-dev.yaml): starting
   points that must be adapted before use.
+- [Validation harness guide](../scripts/validation/README.md): the
+  non-hermetic real-usage test harness — what it exercises, its mock modes,
+  and the safety constraints to read before running it.
 
 carlos-podman is pre-production software under active development. A site
 considering production use must complete its own technical, security, privacy,

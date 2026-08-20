@@ -213,6 +213,8 @@ Files:
   - [Published prebuilt images (ghcr.io)](#published-prebuilt-images-ghcrio)
   - [TLS-inspecting egress proxy](#tls-inspecting-egress-proxy)
 - [Tests](#tests)
+  - [CI workflows](#ci-workflows)
+- [Releases & versioning](#releases--versioning)
 - [Requirements](#requirements)
 - [License](#license)
 
@@ -247,7 +249,8 @@ git clone <this repo> && cd carlos-podman
 
 **1. Describe the instance.** Either run the guided wizard — it asks the
 site questions (instance name, `EMR_HOME`, `BIND_IP`, server name, ports, DB
-root password, billing province, TLS mode, timezone, alert email/heartbeat,
+root password, billing province (`ON`, `BC`, or `generic`), TLS mode,
+timezone, alert email/heartbeat,
 obs profile) and emits a starter host_vars file; it provisions nothing:
 
 ```bash
@@ -396,7 +399,10 @@ schema load seeds the initial administrator account per upstream's database
 setup (see `database/mysql/` in the app repo); create your own provider/admin
 accounts through the Administration UI immediately and disable any seed
 account. A datadir carried over from an existing OpenO/OSCAR install keeps its
-existing logins.
+existing logins. Related knob: `carlos_pin_encrypted` (role default `no`) —
+flipping it to `yes` before the seeded administrator's PIN has been re-saved
+through the UI locks that account out, which is why the default is
+conservative; see the rationale in `defaults/main.yml`.
 
 Each pod runs as a systemd service via a Podman Quadlet unit, but under the
 SERVICE_USER's **`systemd --user`** manager (not the system manager), because
@@ -600,6 +606,8 @@ it; note these four:
   view needs). The pod specs apply at the next start; `play` restarts obs → app
   → waf and vmagent disk-buffers across the seconds-wide 401 window, so there
   is no log loss. Set `carlos_obs_http_auth: false` to keep the old
+  posture; `carlos_obs_http_user`/`carlos_obs_http_password` in host_vars
+  (vaultable) override the generated credential.
   unauthenticated posture.
 - **The host firewall defaults ON.** On a multi-instance host set
   `carlos_host_firewall_enabled: false` on every instance but one (it is
@@ -675,8 +683,10 @@ carlos_pma_port: 19444
 # carlos_https_publish_port: 18443   # port the rootless WAF publishes; offset if bind_ip is shared
 ```
 
-(`carlos-ctl setup` suggests a +10000 offset set automatically for any
-non-default instance name.)
+(For a non-default instance name, `carlos-ctl setup` pre-fills a +10000
+offset on the internal ports — pub/log-view/store/pma; the user-facing
+`HTTPS_PORT` keeps its `443` default, so offset that one yourself when
+instances share a `BIND_IP`.)
 
 Each instance renders its own per-instance nftables table
 (`ip <INSTANCE>-nat`) redirecting its `BIND_IP:HTTPS_PORT →
@@ -814,8 +824,10 @@ it orphans values already encrypted under the old key, so escrow it with the
 other instance secrets; **known early-access limitation**: unlike
 `db_password`, this key is not yet covered by `carlos-ctl seal` — it remains
 in the mode-0600 base properties file on disk even after sealing),
-`drugref_url`, and generated Tomcat keystore passwords (so the well-known
-`changeit` never ships; inert until the Sharing Center is enabled).
+`drugref_url`, and generated Tomcat keystore passwords
+(`carlos_tomcat_keystore_password`/`carlos_tomcat_truststore_password` — so
+the well-known `changeit` never ships; inert until the Sharing Center is
+enabled).
 Everything site-specific beyond that is a hand edit — Ontario
 billing IDs (`clinic_no`/`clinic_view`/`dataCenterId`/`billcenter` are
 OHIP-registration lookups set at billing time), PGP keys, module credentials
@@ -851,7 +863,8 @@ the **official** `mariadb` image instead of the old custom-built
   datadir was written by an older server. It never downgrades — pick a
   `carlos_db_image` version ≥ whatever wrote your datadir (check
   `data/mariadb-mnt/mysql_upgrade_info` for the version that last wrote it).
-  The default is `mariadb:11.4` — the longest-supported current LTS (May
+  The default is `mariadb:11.4` (digest-pinned at 11.4.12 in the role
+  defaults) — the longest-supported current LTS (May
   2029; MariaDB moved to 3-year LTS windows after it, so 11.8 ends June 2028
   while 12.3 gains only a month over 11.4). Because the in-place upgrade
   never downgrades, stay on 11.4 unless your datadir already demands newer,
@@ -1297,9 +1310,15 @@ running and the two SQL files from a CARLOS checkout at hand:
 # (or adjust the paths to your existing checkout):
 git clone https://github.com/carlos-emr/carlos && cd carlos
 sudo carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS drugref2'
-sudo carlos-ctl db drugref2 < database/mysql/development-drugref.sql
-sudo carlos-ctl db drugref2 < database/mysql/drugref/2026-04-19-drugref-tc-atc-f.sql
+sudo carlos-ctl db-migrate --db drugref2 \
+    database/mysql/development-drugref.sql \
+    database/mysql/drugref/2026-04-19-drugref-tc-atc-f.sql
 ```
+
+(`db-migrate --db <database>` targets a database other than `oscar` — same
+collation-pinned per-file sessions and fail-fast contract as the schema
+migrations; a raw `carlos-ctl db drugref2 < file.sql` works too but runs
+unpinned.)
 
 (`carlos-ctl db` is the host DB-admin wrapper — see
 [Database admin from the host](#database-admin-from-the-host). The piped
@@ -2217,6 +2236,14 @@ operator-owned file flows `edit the file → carlos-ctl play`.
 
 Behavior changes an existing install should review before/after pulling:
 
+- **HL7 A04 generation defaults OFF** (`carlos_hl7_a04_generation`; the
+  upstream `true` default wrote ADT files nothing consumed — a dead-green
+  integration). Sites that actually feed an ADT consumer set it back to
+  `true` and point `carlos_hl7_a04_dir` at the consumed path. Similarly the
+  eForm PDF browser check defaults off
+  (`carlos_eform_pdf_browser_startup_check` and its `_chromium_path`/
+  `_chromedriver_path` siblings) — enable only where that upstream feature
+  is in use.
 - **`encryption.util.secret.key` is now required in `carlos.properties`**
   (boot-fatal on the next `rebuild` to current CARLOS develop — the app
   refuses first boot without a pre-provisioned key because it would
@@ -2527,9 +2554,11 @@ tooling cannot do for you:
   a fine first tier but is **not disaster recovery**: a local-only backup
   dies with the host it protects — disk failure, ransomware, theft, or fire
   takes the EMR and its backups together. For genuine recovery, set
-  `RESTIC_REPOSITORY` to an **offsite** backend; any restic backend works
-  (`s3:`, `rest:`, `sftp:`, `b2:`), and backend credentials go in the same
-  env file. Both `check` and the recurring monitor nag about a local-only
+  `RESTIC_REPOSITORY` to an **offsite** backend (`carlos_restic_repository`
+  in host_vars is the provisioned spelling — `restic.env` is
+  operator-owned after first render, so either channel works); any restic
+  backend works (`s3:`, `rest:`, `sftp:`, `b2:`), and backend credentials
+  go in the same env file. Both `check` and the recurring monitor nag about a local-only
   repository (on sealed installs via the non-secret `backup/.repo-posture`
   marker every backup run refreshes) until you either move it offsite or
   set `CARLOS_ACCEPT_LOCAL_REPO=1` to accept the posture explicitly.
@@ -2559,7 +2588,13 @@ orphans the real backup history. `CARLOS_DRILL_ALLOW_NO_PITR=1` accepts a
 base-dump-only drill when the dump carries no binlog anchor (binary logging
 off) — without it the drill fails rather than green-lighting an unexercised
 PITR chain. `CARLOS_ACCEPT_LOCAL_REPO=1` accepts a local-only repository
-(see above).
+(see above). The restore path has four more, same philosophy:
+`CARLOS_RESTORE_ACCEPT_UNSHIPPED=1` (restore even though newer local
+binlogs were never shipped — accepts losing them),
+`CARLOS_RESTORE_BASE_DUMP_ONLY=1` (skip binlog replay entirely — base dump
+state only), `CARLOS_STOP_BEFORE_DUMP_OK=1` and
+`CARLOS_STOP_PAST_CHAIN_END_OK=1` (accept a `--stop-at` time outside the
+dump→chain-end window the guided restore can actually prove).
 
 ### Guided point-in-time restore
 
@@ -2682,7 +2717,9 @@ integrity; this proves the data actually restores. Run it now with
 monitor alerts when that stamp goes stale (`VERIFY_MAX_AGE_HOURS`, default
 192 h ≈ 8 days) — so a drill whose *timer* silently stops firing surfaces,
 not just a drill that runs and fails. The scratch DB loads into a RAM tmpfs
-sized by **`VERIFY_TMPFS_SIZE`** (default `4g`, set in `restic.env`): it
+sized by **`VERIFY_TMPFS_SIZE`** (default `4g`, set in `restic.env`;
+its sibling **`VERIFY_MEM_LIMIT`** caps the drill container's memory —
+`0` disables the cap): it
 must exceed the restored database size, or the drill fails every week — a
 database larger than host RAM needs a disk-backed drill. The drill also
 FAILS when the dump's binlog anchor is missing from the shipped set or the
@@ -2763,7 +2800,10 @@ paths exist (or are explicitly declined):
   argv) and/or emails `ALERT_EMAIL` (needs a sendmail-compatible MTA); each
   configured channel is attempted independently (so either is a fallback for
   the other), and the dispatcher exits nonzero when NO configured channel
-  delivered. With neither set it is journal-only — and `play` refuses that
+  delivered. The provisioned spellings are `carlos_alert_webhook`,
+  `carlos_alert_email`, and `carlos_heartbeat_url` in host_vars (the
+  playbook renders them into `carlos-app.env` — set them there, not by
+  hand-editing the env file). With neither set it is journal-only — and `play` refuses that
   silently-pages-nobody posture unless `ALERT_JOURNAL_ONLY=1` explicitly
   accepts it. **Prove delivery end to end with `carlos-ctl alert-test`** — a
   configured channel is itself a single point of failure until a test message
@@ -3006,6 +3046,10 @@ the host OS and reboot safely:
    non-negotiable before a firmware/kernel update.
 
 ## Troubleshooting
+
+For any `carlos-ctl` failure, `CARLOS_CTL_TRACEBACK=1` turns the one-line
+operator error into the full Python traceback (for bug reports and
+debugging).
 
 ### A container won't start
 
@@ -3305,9 +3349,24 @@ with direct egress.
 - **`tests/ansible-checks.sh`** — the role's own checks: playbook syntax,
   `ansible-lint`, a render-only pass that templates **every** file for
   **both** obs profiles into a temp prefix and asserts token-free output,
-  second-run idempotency (changed=0), and the obs-toggle round trip
-  (on → off → on). Skips itself with a notice when `ansible-playbook` is
-  absent, so the CLI suite stays runnable anywhere.
+  second-run idempotency (changed=0), the obs-toggle round trip
+  (on → off → on), plus cross-instance collision asserts, TLS-mode and
+  host-firewall render checks, credential-character asserts, and a
+  render→CLI lockstep pass. Skips itself with a notice when
+  `ansible-playbook` is absent, so the CLI suite stays runnable anywhere.
+- **`tests/db-migrate-integration.sh`** — the one non-hermetic test in
+  `tests/`: proves `db-migrate`'s collation contract against a REAL
+  MariaDB 11.4+ server (the role-pinned image). It reproduces the
+  `ERROR 1267` abort on the actual upstream V1.0.7 migration in an
+  unpinned utf8mb4 session, recovers the partially-migrated database
+  through the pinned path, asserts the PHCP rows land, and proves a
+  second pass is a no-op. Needs root, Podman, and network (it resolves
+  the migration source from the newest published CARLOS release;
+  `CARLOS_MIGRATIONS_DIR` uses a local checkout, `CARLOS_MIGRATIONS_REF`
+  pins a tag, `GH_TOKEN` authenticates the API call in CI). It REFUSES
+  to run on a host with a live `carlos-app-db` container — disposable
+  hosts/CI only. **Not part of `make check`** (which stays hermetic);
+  run it via `make db-migrate-int` or directly.
 
 What the harness deliberately does NOT cover: live `podman kube play`
 behavior, the restore drill's binlog-replay leg, and the WAF/login cookie
@@ -3319,8 +3378,45 @@ real-usage harness for the release-first source selection: real Podman
 builds of both apps, real curl + TLS against a local mock of
 `api.github.com` serving a frozen snapshot of real release data, tamper and
 mid-resolution failure drills, and a no-silent-failure contract on every
-check. It needs root and a disposable dev machine — see
-`scripts/validation/README.md` before running it.
+check. It needs root and a disposable dev machine — read
+[`scripts/validation/README.md`](scripts/validation/README.md) before
+running it.
+
+### CI workflows
+
+Four GitHub Actions workflows (`.github/workflows/`, actions pinned to
+commit SHAs):
+
+- **tests** — on every push/PR: the unit suite on Python 3.9 (the EL9
+  production floor) and 3.12, the hermetic e2e suite, the
+  `db-migrate-integration` job (real MariaDB), the Ansible role checks,
+  and BuildKit `--check` validation of both Containerfiles (parse + rule
+  lint without executing the build).
+- **Publish Images** — manual dispatch, per app release: builds and
+  publishes the prebuilt multi-arch images to ghcr.io with provenance
+  attestations (see
+  [Supply chain & published images](#supply-chain--published-images)).
+- **Release** — manual dispatch: tags and publishes a carlos-podman
+  release; refuses a tag that does not equal `carlos_ctl.__version__`
+  (see [Releases & versioning](#releases--versioning)).
+- **image-digest-freshness** — weekly: re-resolves every `tag@sha256` pin
+  across the role defaults, `config.py`, and both Containerfiles, and
+  opens an advisory report when a pinned digest has drifted from its tag.
+
+## Releases & versioning
+
+carlos-podman versions with **SemVer 2.0.0** (the deployed CARLOS app keeps
+its own CalVer line — the two are independent). To cut a release:
+
+1. Bump the version in **both** `carlos_ctl/__init__.py` (`__version__`)
+   and `pyproject.toml` — a unit test pins them equal, so `make check`
+   catches a half bump.
+2. Dispatch the **Release** workflow with the tag (`v<version>`). It
+   hard-fails unless the tag matches `carlos_ctl.__version__`, then
+   creates the GitHub release with auto-generated notes.
+
+Published tags are never moved or reused. There is no CHANGELOG file —
+the generated release notes are the record.
 
 ## Requirements
 
@@ -3370,7 +3466,12 @@ check. It needs root and a disposable dev machine — see
   the containers will get permission denials on every hostPath. Target hosts
   are assumed permissive/AppArmor (Debian/Ubuntu); on an enforcing host,
   label `$EMR_HOME` for container access (e.g. `chcon -R -t
-  container_file_t`) or add relabeling before relying on this deployment
+  container_file_t`) or add relabeling before relying on this deployment;
+  the role's assert refuses an enforcing host unless
+  `carlos_accept_selinux: true` acknowledges the manual labeling
+  (siblings for other host-precondition asserts: `carlos_allow_any_bind`
+  for a BIND_IP the host does not carry yet, `carlos_allow_nft_failure`
+  for hosts where nftables cannot load)
 - **Encrypted swap, zram, or no swap.** Decrypted secret material (the age
   master key, the restic env, staged PHI dumps) lives in `/run` tmpfs while
   in use; under memory pressure tmpfs pages can be written to swap and

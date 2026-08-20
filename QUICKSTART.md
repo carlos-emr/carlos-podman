@@ -255,6 +255,9 @@ For a British Columbia test instance, run:
 scripts/dev-setup.sh --province BC
 ```
 
+(`--server-name NAME` sets the rendered server name when you need something
+other than the default; `scripts/dev-setup.sh --help` lists every flag.)
+
 For a different instance directory, pass an absolute path and keep the same
 value in later commands:
 
@@ -560,7 +563,7 @@ python3 -m carlos_ctl.cli setup
 ```
 
 When prompted for **Billing province**, choose `ON` for Ontario or `BC` for
-British Columbia. The wizard writes
+British Columbia (`generic` exists for non-provincial evaluation). The wizard writes
 `ansible/host_vars/<instance-name>.yml`. The instance name must match the name
 in `ansible/inventory`.
 
