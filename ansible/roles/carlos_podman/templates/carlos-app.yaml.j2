@@ -693,8 +693,8 @@ spec:
         periodSeconds: 30
         timeoutSeconds: 10
         failureThreshold: 5
-      # Startup gate: up to 10 min of slow first-boot (war explode, schema
-      # migration) before liveness starts counting — prevents a liveness kill
+      # Startup gate: up to 20 min (1200 s) of slow first-boot (war explode,
+      # schema migration) before liveness starts counting — prevents a liveness kill
       # mid-migration crash-looping the app. Honored by recent podman;
       # ignored harmlessly by versions that don't map startupProbe (the
       # liveness initialDelay above still covers them). Verify live after a

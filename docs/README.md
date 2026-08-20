@@ -17,8 +17,10 @@ The project documentation is organized by audience:
   [example application manifest](../examples/carlos-app-dev.yaml): starting
   points that must be adapted before use.
 
-The project is alpha software. A site considering production use must complete
-its own technical, security, privacy, backup, restore, and regulatory review.
+carlos-podman is pre-production software under active development. A site
+considering production use must complete its own technical, security, privacy,
+backup, restore, and regulatory review before using the system with patient
+information.
 Operational procedures in the project guide assume a dedicated service account
 and rootless Podman.
 

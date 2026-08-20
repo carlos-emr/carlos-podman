@@ -2,10 +2,11 @@
 <!-- Copyright (C) 2026 CARLOS Contributors -->
 # Quick start: deploy CARLOS with rootless Podman
 
-> **Status: alpha.** carlos-podman is new and deployment procedures may change.
-> Two installation paths are documented below. A site considering production
-> use must complete its own technical, security, privacy, backup, restore, and
-> regulatory review before using the system with patient information.
+> **Status: pre-production.** carlos-podman is under active development and
+> its interfaces and deployment procedures may change. A site considering
+> production use must complete its own technical, security, privacy, backup,
+> restore, and regulatory review before using the system with patient
+> information. Two installation paths are documented below.
 
 This guide covers:
 
@@ -158,7 +159,7 @@ commit, and the WAR's sha256 (from the sibling `.war.sha256` asset), then
 build with the download stage:
 
 ```bash
-CARLOS_TAG=2026.08.0-alpha1     # the newest release tag you picked
+CARLOS_TAG=2026.08.0-alpha4     # the newest release tag you picked
 CARLOS_SHA=$(curl -s "https://api.github.com/repos/carlos-emr/carlos/commits/$CARLOS_TAG" \
   | grep -m1 '"sha"' | cut -d'"' -f4)
 WAR_URL="https://github.com/carlos-emr/carlos/releases/download/$CARLOS_TAG/carlos-$CARLOS_TAG.war"
@@ -437,8 +438,8 @@ a target host. It supports a new ON or BC database and adoption of an existing
 OpenO/OSCAR database. Unlike the sample path, it configures the WAF, DrugRef,
 monitoring, scheduled backups, systemd units, and secret management.
 
-Because carlos-podman is alpha software, these steps are not a production
-certification. Before using patient information, the organization operating the
+Because carlos-podman is pre-production software, these steps are not a
+production certification. Before using patient information, the organization operating the
 system must review and test the deployment, including access controls, TLS,
 network exposure, backup destinations, restore procedures, alert delivery,
 host hardening, and applicable privacy requirements.
