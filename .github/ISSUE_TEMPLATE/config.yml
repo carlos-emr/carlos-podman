@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 CARLOS Contributors
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/carlos-emr/carlos-podman/security/advisories/new
+    about: Exploitable problems go here, never into a public issue.
+  - name: CARLOS EMR application issues
+    url: https://github.com/carlos-emr/carlos/issues
+    about: Bugs in the EMR application itself, rather than this deployment tooling.

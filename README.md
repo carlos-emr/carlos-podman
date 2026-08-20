@@ -2,6 +2,10 @@
 <!-- Copyright (C) 2026 CARLOS Contributors -->
 # carlos-podman — CARLOS EMR under Podman
 
+[![tests](https://github.com/carlos-emr/carlos-podman/actions/workflows/tests.yml/badge.svg)](https://github.com/carlos-emr/carlos-podman/actions/workflows/tests.yml)
+[![license: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue)](LICENSE)
+[![release](https://img.shields.io/github/v/release/carlos-emr/carlos-podman?include_prereleases)](https://github.com/carlos-emr/carlos-podman/releases)
+
 > **Status: pre-production.** carlos-podman is under active development and
 > its interfaces and deployment procedures may change. A site considering
 > production use must complete its own technical, security, privacy, backup,
@@ -217,6 +221,7 @@ Files:
 - [Releases & versioning](#releases--versioning)
 - [Requirements](#requirements)
 - [License](#license)
+- [Contributing & reporting issues](#contributing--reporting-issues)
 
 ## Quick start
 
@@ -3540,3 +3545,12 @@ sources are **GPL-2.0-or-later**; they are distributed here under
 
 CARLOS itself, and the container images this pod runs, carry their own
 licenses.
+
+## Contributing & reporting issues
+
+Contributions are welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers the
+development setup, the test battery, and PR conventions. Bugs and feature
+requests go through
+[GitHub issues](https://github.com/carlos-emr/carlos-podman/issues);
+suspected security vulnerabilities go through the **private** flow in
+[SECURITY.md](SECURITY.md), never a public issue.
