@@ -389,7 +389,9 @@ resolves it from the registry the playbook wrote.)
 
 ### First login
 
-CARLOS ships **no default production credentials.** A fresh
+CARLOS ships **no default production credentials** (the development seed
+data used by the QUICKSTART sample pod carries known dev-only credentials —
+never load it on a production instance). A fresh
 schema load seeds the initial administrator account per upstream's database
 setup (see `database/mysql/` in the app repo); create your own provider/admin
 accounts through the Administration UI immediately and disable any seed
