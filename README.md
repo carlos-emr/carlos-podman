@@ -147,7 +147,7 @@ Files:
   second-run idempotency, and the obs-toggle round trip
 - `tests/db-migrate-integration.sh` — non-hermetic integration test proving
   the `db-migrate` collation contract against a REAL MariaDB 11.4+ server
-  (root + podman + network; refuses to run beside a live deployment) — see
+  (root + Podman + network; refuses to run beside a live deployment) — see
   [Tests](#tests)
 - `scripts/validation/` — the non-hermetic real-usage validation harness
   (real podman, disposable hosts only; read `scripts/validation/README.md`
