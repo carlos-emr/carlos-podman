@@ -144,9 +144,9 @@ cd carlos-podman
 
 CARLOS publishes GitHub releases, and a release usually ships a prebuilt
 `carlos-<tag>.war` — using it skips the long Maven compile. List the releases
-and pick the newest one (the full Ansible deployment automates exactly this
+and pick the newest one — the full Ansible deployment automates exactly this
 policy; see the project guide's
-[Choosing the CARLOS and DrugRef versions](README.md#choosing-the-carlos-and-drugref-versions)):
+[Choosing the CARLOS and DrugRef versions](README.md#choosing-the-carlos-and-drugref-versions):
 
 ```bash
 curl -s https://api.github.com/repos/carlos-emr/carlos/releases \

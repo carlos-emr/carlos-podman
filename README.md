@@ -2151,7 +2151,7 @@ nothing downstream changes.
   registry with a digest-preserving copy (`skopeo copy --all
   --preserve-digests docker://ghcr.io/... docker://mirror/...`) and point
   `carlos_image_repo` / `carlos_drugref_image_repo` at the mirror. (`podman
-  save`/`Podman load` does NOT reliably preserve registry digests or
+  save`/`podman load` does NOT reliably preserve registry digests or
   manifest lists — a loaded image may not match the pin.) The manual
   channel skips resolution entirely:
   `<APP>_REF=<tag>`, `<APP>_ARTIFACT=image`,
@@ -2982,7 +2982,7 @@ the instance from `$EMR_HOME` (or `--instance <name>`).
 | **DiskLow** | `df -h $EMR_HOME`; `du -sh $EMR_HOME/backup/mariadb-hot/* $EMR_HOME/logs/*.hprof 2>/dev/null` | See the reclaim order below. |
 | **backup-stamp-stale / restore-drill-stale** | `carlos-ctl backup status`; `journalctl -u <inst>-backup.service` | Backup/verify timer failing — read the unit log, fix the repo/creds, `systemctl start <inst>-backup.service`. A stale drill means the last restore test did not complete: investigate before trusting the backups. |
 | **cert-served-mismatch / cert-expiry** | `curl -skI https://<server>/` | Renew the cert at `$EMR_HOME/container/conf/waf/certs/`, then `carlos-ctl play` (or restart the WAF pod). |
-| **LogIngestionStalled** | `journalctl -u <inst>.service \| grep logcollect`; `carlos-ctl check` | vector/VictoriaLogs wedged — restart the obs pod; check disk (the vector buffer blocks when full). |
+| **LogIngestionStalled** | `journalctl -u <inst>-obs.service \| grep logcollect`; `carlos-ctl check` | vector/VictoriaLogs wedged — restart the obs pod; check disk (the vector buffer blocks when full). |
 | **heap-dump-present** | `ls -lh $EMR_HOME/logs/*.hprof` | A JVM OOM dumped a heap. Analyse then DELETE it (it is plaintext PHI and large — see reclaim order). |
 | **cert-restart-needed** (acme) | `systemctl status <inst>-cert-renew.service`; `ls -l $EMR_HOME/container/conf/waf/.cert-restart-needed` | A renewed cert is installed on disk but a consumer pod restart FAILED — the WAF/log view still serve the OLD cert. Restart by hand (`carlos-ctl play`) or let the next daily cert-renew run retry; the marker clears on success. A failed *renewal* itself (certbot error) pages via the unit's OnFailure: check DNS for the server name, that :80 reaches this host (acme redirect), and the certbot output in the unit log. |
 | **hostfw-table-missing** | `nft list table inet <inst>-hostfw`; `systemctl status <inst>-nft.service` | The default-deny host firewall is NOT loaded (the apply unit is fail-open) — the host is running unfirewalled. Fix the ruleset error in the unit log, `systemctl restart <inst>-nft.service`, and confirm the guard/monitor stop paging. |
@@ -3074,8 +3074,15 @@ debugging).
   recursively but the binlog dir non-recursively (a fresh install's binlog
   dir is empty, so the dir chown suffices). Binlog files carried over from
   another install and owned by a different uid then block the db uid. Fix
-  once with `chown -R 999:999 $EMR_HOME/data/mariadb-binlog` (999 = the
-  docker-library mariadb uid; on a rootless host use the mapped subuid).
+  once with the two-step handoff (a plain host `chown -R 999:999` would
+  assign the LITERAL host uid 999, not the container's mapped subuid): as
+  root, `chown -R <SERVICE_USER>:<SERVICE_USER>
+  $EMR_HOME/data/mariadb-binlog` (brings foreign-owned files inside the
+  service user's id map — `podman unshare` cannot touch them before this),
+  then `runuser -u <SERVICE_USER> -- podman unshare chown -R 999:999
+  $EMR_HOME/data/mariadb-binlog` (999 = the mariadb container uid; unshare
+  maps it to the correct subuid automatically — the same handoff pattern as
+  the subuid-ownership note under the alert runbook).
 - **carlos/drugref exit with `FATAL: db_password is __SEALED__`**: the
   secrets unit failed to render — `journalctl -u <instance>-secrets.service`;
   a TPM/Secure-Boot change means re-sealing with the escrowed age key.
@@ -3495,7 +3502,7 @@ the generated release notes are the record.
   "Resource limits, JVM heap & health checks" to tune down)
 - A **real resolver** in the host's `/etc/resolv.conf`. The playbook copies
   that file into the `carlos` container ONLY (a DNS workaround carried over
-  from the OpenO setup; Podman kube play's own `dnsConfig` is unreliable —
+  from the OpenO setup; `podman kube play`'s own `dnsConfig` is unreliable —
   Podman #20562/#9132). The `waf` container deliberately keeps Podman's
   generated resolv.conf: that is what carries the aardvark-dns server
   resolving `carlos-app` for `BACKEND` proxying, and the WAF needs no

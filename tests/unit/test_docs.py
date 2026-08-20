@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _dispatch_verbs() -> set:
     """Every verb literal cli.py dispatches on (single and tuple matches)."""
-    src = (ROOT / "carlos_ctl" / "cli.py").read_text()
+    src = (ROOT / "carlos_ctl" / "cli.py").read_text(encoding="utf-8")
     verbs = set(re.findall(r'verb == "([a-z][a-z0-9-]*)"', src))
     for group in re.findall(r"verb in \(([^)]*)\)", src):
         verbs.update(re.findall(r'"([a-z][a-z0-9-]*)"', group))
@@ -27,7 +27,7 @@ def _dispatch_verbs() -> set:
 
 def _inventory_block() -> str:
     """The verb-inventory paragraph in the README's files catalogue."""
-    readme = (ROOT / "README.md").read_text()
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     m = re.search(
         r"Lifecycle-grouped verbs:(.*?)plus `help` and `version`",
         readme,
