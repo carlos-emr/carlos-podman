@@ -370,8 +370,9 @@ Under the full Ansible deployment, the supported equivalent is
 `SET NAMES utf8mb4 COLLATE utf8mb4_general_ci` pin in the same client session
 via `--init-command` (the pin must ride the session that executes the SQL; a
 prior standalone `SET NAMES` client run does not carry over) and stops
-fail-fast on the first SQL error. See the README's Schema section for the
-`ERROR 1267` background and the V1.0.7 recovery procedure.
+fail-fast on the first SQL error. See the project guide's
+[Schema section](README.md#schema) for the `ERROR 1267` background and the
+V1.0.7 recovery procedure.
 
 Restart the application container after the schema load so Tomcat opens the
 new database cleanly:

@@ -141,35 +141,77 @@ Files:
 - `tests/ansible-checks.sh` — role checks: syntax, ansible-lint, a full
   template render into a temp prefix (both obs profiles, token-free output),
   second-run idempotency, and the obs-toggle round trip
+- `tests/db-migrate-integration.sh` — non-hermetic integration test proving
+  the `db-migrate` collation contract against a REAL MariaDB 11.4+ server
+  (root + podman + network; refuses to run beside a live deployment) — see
+  [Tests](#tests)
+- `scripts/validation/` — the non-hermetic real-usage validation harness
+  (real podman, disposable hosts only; read `scripts/validation/README.md`
+  before running)
 - `Makefile` — `make check` = ruff + mypy + pytest + the e2e suite + the
   Ansible checks (dev-workstation targets; production installs never run
   make)
 - `pyproject.toml` — dev toolchain config and workstation editable installs
   only (production hosts get the package file-copied by the role)
+- [`QUICKSTART.md`](QUICKSTART.md) — guided walk-throughs (sample pod +
+  standard deployment); [`docs/`](docs/README.md) — the docs index and
+  development notes; `examples/` — the sample-deployment pod spec;
+  [`LICENSE`](LICENSE) — AGPL-3.0-only (see [License](#license))
 
 ## Contents
 
 - [Quick start](#quick-start)
+  - [First login](#first-login)
 - [Design rationale](#design-rationale)
 - [Migration from the bash carlos-ctl](#migration-from-the-bash-carlos-ctl)
 - [Running one or multiple instances](#running-one-or-multiple-instances)
 - [carlos.properties (replaces oscar.properties)](#carlosproperties-replaces-oscarproperties)
 - [Database: keeping your MariaDB data](#database-keeping-your-mariadb-data)
+  - [Blank-datadir guard](#blank-datadir-guard)
+  - [Schema](#schema)
 - [What changed vs. the old openo-app pod](#what-changed-vs-the-old-openo-app-pod)
+  - [Container privilege model](#container-privilege-model)
+  - [Rootless engine](#rootless-engine)
+  - [Least-privilege DB accounts](#least-privilege-db-accounts)
 - [WAF/DB network isolation](#wafdb-network-isolation)
 - [The observability pod is optional](#the-observability-pod-is-optional)
 - [DrugRef](#drugref)
 - [Logs & metrics](#logs--metrics)
+  - [Logs](#logs)
+  - [Metrics](#metrics)
+  - [Viewing — the "slim SIEM"](#viewing--the-slim-siem)
 - [WAF audit log & PHI](#waf-audit-log--phi)
+- [Compliance risk register (accepted risks at a glance)](#compliance-risk-register-accepted-risks-at-a-glance)
 - [Database admin from the host](#database-admin-from-the-host)
 - [phpMyAdmin (on-demand database admin)](#phpmyadmin-on-demand-database-admin)
 - [Secrets](#secrets)
+  - [Single master (SOPS + age)](#single-master-sops--age)
+  - [Sealing](#sealing)
+  - [Portable disaster recovery](#portable-disaster-recovery)
+  - [Rotating credentials](#rotating-credentials)
 - [Opt-in hardening & data-integrity knobs](#opt-in-hardening--data-integrity-knobs)
 - [Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions)
+  - [Prebuilt images (`<APP>_ARTIFACT=image`)](#prebuilt-images-app_artifactimage)
 - [Updating](#updating)
+  - [Upgrade considerations](#upgrade-considerations)
+  - [Data-safety invariants](#data-safety-invariants)
 - [Backups (restic)](#backups-restic)
+  - [Guided point-in-time restore](#guided-point-in-time-restore)
+  - [Disaster-recovery runbook (bare host → running EMR)](#disaster-recovery-runbook-bare-host--running-emr)
+  - [Restore drill](#restore-drill)
+  - [Native MariaDB physical backups (manual alternative)](#native-mariadb-physical-backups-manual-alternative)
 - [Alerting & health monitoring](#alerting--health-monitoring)
+  - [Validating a deployment (`carlos-ctl check`)](#validating-a-deployment-carlos-ctl-check)
+  - [Alert → response runbook](#alert--response-runbook)
+  - [Patching & rebooting the host](#patching--rebooting-the-host)
+- [Troubleshooting](#troubleshooting)
+  - [A container won't start](#a-container-wont-start)
 - [Resource limits, JVM heap & health checks](#resource-limits-jvm-heap--health-checks)
+  - [Liveness probes](#liveness-probes)
+- [Supply chain & published images](#supply-chain--published-images)
+  - [Release builds](#release-builds)
+  - [Published prebuilt images (ghcr.io)](#published-prebuilt-images-ghcrio)
+  - [TLS-inspecting egress proxy](#tls-inspecting-egress-proxy)
 - [Tests](#tests)
 - [Requirements](#requirements)
 - [License](#license)
@@ -181,6 +223,8 @@ Files:
 > deployment. The steps below are the full Ansible workflow, including the WAF,
 > backups, monitoring, and secret sealing.
 
+Check the target host against [Requirements](#requirements) first (Podman ≥
+4.9, cgroups v2, systemd, RAM sized to the pod limits, and friends).
 Provisioning runs from a **control node** (your workstation or a management
 host) with `ansible-core`, `passlib`, and `netaddr` installed plus the
 `ansible.utils` collection:
@@ -199,135 +243,140 @@ assert catches this and points here.)
 
 ```bash
 git clone <this repo> && cd carlos-podman
+```
 
-# 1. Describe the instance. EITHER run the guided wizard (it asks the site
-#    questions — instance name, EMR_HOME, BIND_IP, server name, ports, DB
-#    root password, billing province, obs profile — and EMITS a starter
-#    host_vars file; it provisions nothing):
+**1. Describe the instance.** Either run the guided wizard — it asks the
+site questions (instance name, `EMR_HOME`, `BIND_IP`, server name, ports, DB
+root password, billing province, TLS mode, timezone, alert email/heartbeat,
+obs profile) and emits a starter host_vars file; it provisions nothing:
+
+```bash
 python3 -m carlos_ctl.cli setup        # writes ansible/host_vars/<instance>.yml
-#    OR hand-write ansible/host_vars/<instance>.yml — every option, with its
-#    default and rationale, is documented in
-#    ansible/roles/carlos_podman/defaults/main.yml. Add the instance to your
-#    inventory (see ansible/inventory.example: one line per instance).
+```
 
-# 2. Vault the MariaDB root password (setup writes it plaintext 0600 because
-#    it ran interactively — vault it before the file goes anywhere near a repo):
+…or hand-write `ansible/host_vars/<instance>.yml` — every option, with its
+default and rationale, is documented in
+`ansible/roles/carlos_podman/defaults/main.yml`. Add the instance to your
+inventory (see `ansible/inventory.example`: one line per instance).
+
+**2. Vault the MariaDB root password.** `setup` writes it plaintext 0600
+because it ran interactively — vault it before the file goes anywhere near a
+repo:
+
+```bash
 ansible-vault encrypt_string --name carlos_db_root_password
-#    ...and paste the result over the plaintext line in host_vars.
+```
 
-# 3. Provision. Idempotent; re-run it forever. This is the old init +
-#    bootstrap + sync-conf in one verb: host prep (service user, subuids,
-#    linger, persistent journald), every rendered config/unit/quadlet, the
-#    podman networks + db secret, the nftables redirect, the instance
-#    registry entry, and the installed carlos-ctl CLI.
+…and paste the result over the plaintext line in host_vars.
+
+**3. Provision.** Idempotent; re-run it forever. This is the old `init` +
+`bootstrap` + `sync-conf` in one verb: host prep (service user, subuids,
+linger, persistent journald), every rendered config/unit/quadlet, the Podman
+networks + db secret, the nftables redirect, the instance registry entry,
+and the installed `carlos-ctl` CLI:
+
+```bash
 sudo ansible-playbook -i inventory ansible/site.yml
+```
 
-# 4. Front-door TLS. The default mode is `selfsigned` (carlos_tls_mode):
-#    provisioning and `play` generate a self-signed cert+key at
-#    $EMR_HOME/container/conf/waf/certs/{fullchain,privkey}.pem automatically,
-#    so the WAF starts with NOTHING to do here — browsers warn until you
-#    replace it. Two alternatives (set carlos_tls_mode in host_vars):
-#      - manual: place your own {fullchain,privkey}.pem at that path; `play`
-#        refuses to start without them (today's behavior).
-#      - acme:   Let's Encrypt via a certbot sidecar. After DNS for the
-#        server name points here, issue/renew with
-#        `sudo EMR_HOME=/usr/local/emr carlos-ctl cert-renew` (a daily renew
-#        timer is installed in acme mode). Needs carlos_acme_email.
-#    `play` never clobbers an operator-placed cert; in selfsigned mode it only
-#    (re)generates one that is missing or an expired self-issued pair.
+**4. Front-door TLS.** The default mode is `selfsigned` (`carlos_tls_mode`):
+provisioning and `play` generate a self-signed cert+key at
+`$EMR_HOME/container/conf/waf/certs/{fullchain,privkey}.pem` automatically,
+so the WAF starts with nothing to do here — browsers warn until you replace
+it. Two alternatives (set `carlos_tls_mode` in host_vars):
 
-# 5. Build the CARLOS and DrugRef images. The role installed the build
-#    context to $EMR_HOME/build/. The FIRST build resolves EACH app's newest
-#    GitHub release (newest non-prerelease by publish time > newest
-#    prerelease > its fallback-branch HEAD: main for CARLOS, master for
-#    DrugRef), prefers the release's published
-#    WAR (sha256-verified — skips the long Maven compile), and PINS the
-#    choices in $EMR_HOME/build/ (.source-pin, .source-pin.drugref): later
-#    builds stay on those pins, offline, until `carlos-ctl source update`
-#    moves them. `carlos-ctl source` shows what is pinned; see "Choosing the
-#    CARLOS and DrugRef versions" below.
+- `manual`: place your own `{fullchain,privkey}.pem` at that path; `play`
+  refuses to start without them.
+- `acme`: Let's Encrypt via a certbot sidecar. After DNS for the server name
+  points here, issue/renew with
+  `sudo EMR_HOME=/usr/local/emr carlos-ctl cert-renew` (a daily renew timer
+  is installed in acme mode). Needs `carlos_acme_email`.
+
+`play` never clobbers an operator-placed cert; in selfsigned mode it only
+(re)generates one that is missing or an expired self-issued pair.
+
+**5. Build the CARLOS and DrugRef images.** The role installed the build
+context to `$EMR_HOME/build/`. The first build resolves each app's newest
+GitHub release (newest non-prerelease by publish time > newest prerelease >
+its fallback-branch HEAD: `main` for CARLOS, `master` for DrugRef), prefers
+the release's published WAR (sha256-verified — skips the long Maven
+compile), and pins the choices in `$EMR_HOME/build/` (`.source-pin`,
+`.source-pin.drugref`): later builds stay on those pins, offline, until
+`carlos-ctl source update` moves them. `carlos-ctl source` shows what is
+pinned; see
+[Choosing the CARLOS and DrugRef versions](#choosing-the-carlos-and-drugref-versions).
+
+```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl build
+```
 
-# 6. Start, then validate the running deployment end to end. `play`
-#    provisions least-privilege DB accounts by DEFAULT (app, DrugRef, backup,
-#    metrics-exporter) and restarts the app off the MariaDB root account
-#    (the playbook rendered CARLOS_DB_ROOT_PASSWORD into carlos-app.env for
-#    this; play REFUSES to deploy an unprovisioned app with no password
-#    available — CARLOS_ALLOW_DB_ROOT=1 overrides once, and
-#    CARLOS_SKIP_AUTO_DB_USERS=1 defers provisioning to a later manual
-#    `carlos-ctl db-users`). play also refuses
-#    go-live without an alert channel (ALERT_JOURNAL_ONLY=1 to accept
-#    journal-only) and without a HEARTBEAT_URL dead-man's switch
-#    (CARLOS_NO_HEARTBEAT=1 to accept the blind spot). The first successful
-#    play starts the backup/monitor timers and seeds their freshness stamps.
-#
-#    FRESH INSTALL — EXPECT THIS FIRST `play` TO EXIT NONZERO. It starts the
-#    pods (which is what 6b and 8 need: the db must be running to load SQL
-#    into), then gates go-live on the app AND DrugRef actually serving. On a
-#    machine with no `oscar` and no `drugref2` database yet, neither can:
-#    CARLOS waits out its wait-for-db and deploys against a missing schema,
-#    and DrugRef's /drugref2 context cannot start at all. So play reports
-#    "the app is not serving", writes NO go-live markers and arms NO timers —
-#    correct, not a failure of the install. Load the databases (6b + 8), THEN
-#    RE-RUN `play`; that run is the one that goes green and arms the schedule.
-#    Re-running play is also what picks up the freshly-loaded drugref2
-#    database: DrugRef builds its Hibernate session factory once at context
-#    start and never retries.
+**6. Start, then validate.** `play` provisions least-privilege DB accounts
+by default (app, DrugRef, backup, metrics-exporter) and restarts the app off
+the MariaDB root account (the playbook rendered `CARLOS_DB_ROOT_PASSWORD`
+into `carlos-app.env` for this; `play` refuses to deploy an unprovisioned
+app with no password available — `CARLOS_ALLOW_DB_ROOT=1` overrides once,
+and `CARLOS_SKIP_AUTO_DB_USERS=1` defers provisioning to a later manual
+`carlos-ctl db-users`). `play` also refuses go-live without an alert channel
+(`ALERT_JOURNAL_ONLY=1` to accept journal-only) and without a
+`HEARTBEAT_URL` dead-man's switch (`CARLOS_NO_HEARTBEAT=1` to accept the
+blind spot). The first successful play starts the backup/monitor timers and
+seeds their freshness stamps.
+
+```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl play
 sudo EMR_HOME=/usr/local/emr carlos-ctl check
+```
 
-# 6b. FRESH INSTALL ONLY (no existing datadir): load the CARLOS schema AFTER
-#    `play` (the db must be running) and before first login. Reusing an
-#    existing OpenO/OSCAR datadir? Skip this — the app logs any missing
-#    migrations at startup (see "Schema" below).
-#      MariaDB publishes NO TCP port (the WAF/DB isolation boundary), so
-#      any loader that drives a `mysql` client over TCP cannot reach this
-#      deployment. Upstream retired the legacy
-#      createdatabase_*.sh/oscarinit*.sql build for Flyway-style files under
-#      database/mysql/migration/ — apply them in version order, common and
-#      province interleaved, through `carlos-ctl db-migrate`: it runs each
-#      file in a client session pinned to the schema's utf8mb4_general_ci
-#      collation (MariaDB 11.4+ otherwise maps utf8mb4 sessions to
-#      uca1400_ai_ci and collation-sensitive migrations abort with ERROR
-#      1267) and stops fail-fast at the first SQL error. From a
-#      github.com/carlos-emr/carlos checkout (Ontario shown; use
-#      bc/ for BC):
+> **Fresh install — expect this first `play` to exit nonzero.** It starts
+> the pods (which is what steps 7–8 need: the db must be running to load SQL
+> into), then gates go-live on the app AND DrugRef actually serving. On a
+> machine with no `oscar` and no `drugref2` database yet, neither can:
+> CARLOS waits out its wait-for-db and deploys against a missing schema, and
+> DrugRef's `/drugref2` context cannot start at all. So `play` reports "the
+> app is not serving", writes no go-live markers and arms no timers —
+> correct, not a failure of the install. Load the databases (steps 7–8),
+> then re-run `play` (step 9); that run is the one that goes green and arms
+> the schedule.
+
+**7. Fresh install only — load the CARLOS schema** (no existing datadir;
+after `play` so the db is running, before first login). Reusing an existing
+OpenO/OSCAR datadir? Skip this — the app logs any missing migrations at
+startup. MariaDB publishes no TCP port (the WAF/DB isolation boundary), so
+any loader that drives a `mysql` client over TCP cannot reach this
+deployment — use `carlos-ctl db-migrate`, which runs each migration file in
+a client session pinned to the schema's collation:
+
+```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
-cd database/mysql/migration
-sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
-    common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
-    on/V1.0.2__on_data.sql common/V1.0.3__performance_indexes.sql \
-    on/V1.0.4__on_performance_indexes.sql \
-    common/V1.0.5__restore_live_legacy_common_tables.sql \
-    on/V1.0.6__restore_reporting_privilege.sql \
-    common/V1.0.7__restore_phcp_diagnosis_groups.sql \
-    common/V1.0.8__expand_appointment_type_location.sql \
-    common/V1.0.9__remove_carlosdoc_schedule_group_denial.sql \
-    common/V1.0.10__seed_default_measurement_groups.sql \
-    on/V1.0.11__billing_filename_unique_indexes.sql \
-    on/V1.0.12__portable_billing_filename_unique_indexes.sql \
-    common/V1.0.13__fix_phcp_diagnosis_group_backfill_collation.sql
-#      Current through V1.0.13. New upstream migrations continue the V1.0.N
-#      sequence — check database/mysql/migration/README.md in the app repo
-#      for the current list and order. See "Schema" below.
+```
 
-# 6c. FRESH INSTALL ONLY: create and load the drugref2 database now too (the
-#    full recipe is in the DrugRef section below — including the mandatory
-#    InnoDB conversion). It belongs HERE, before the go-live play: DrugRef's
-#    Spring context builds its Hibernate session factory at startup and never
-#    retries, so a container started against a missing drugref2 serves 404
-#    for the rest of its life and `play` can never green.
+…then apply the Flyway migration files from a
+`github.com/carlos-emr/carlos` checkout in version order through one
+`carlos-ctl db-migrate` invocation — the full current file list (Ontario and
+BC variants) and the collation rationale live in [Schema](#schema).
 
-# 6d. FRESH INSTALL ONLY: with both databases loaded, re-run play — this is
-#    the run that turns green, writes the go-live markers and arms the
-#    backup/monitor timers.
+**8. Fresh install only — create and load the drugref2 database** (the full
+recipe is in the [DrugRef section](#drugref), including the mandatory InnoDB
+conversion). It belongs here, before the go-live play: DrugRef's Spring
+context builds its Hibernate session factory at startup and never retries,
+so a container started against a missing `drugref2` serves 404 for the rest
+of its life and `play` can never green.
+
+**9. Fresh install only — re-run `play`.** With both databases loaded, this
+is the run that turns green, writes the go-live markers and arms the
+backup/monitor timers:
+
+```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl play
 sudo EMR_HOME=/usr/local/emr carlos-ctl check
+```
 
-# 7. Seal secrets into the SOPS+age single-master bundle (TPM-protected key
-#    at rest where available) and ESCROW the age private key AND the full
-#    restic.env content OFF-HOST — those two are what recover everything,
-#    including the backups; seal refuses until you confirm both.
+**10. Seal secrets** into the SOPS+age single-master bundle (TPM-protected
+key at rest where available) and escrow the age private key AND the full
+`restic.env` content off-host — those two are what recover everything,
+including the backups; `seal` refuses until you confirm both:
+
+```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl seal
 ```
 
@@ -338,7 +387,9 @@ Then browse to `https://<SERVER_NAME>/` — the image redirects `/` to
 non-default home or a second instance; `carlos-ctl --instance <name> <verb>`
 resolves it from the registry the playbook wrote.)
 
-**First login.** CARLOS ships **no default production credentials.** A fresh
+### First login
+
+CARLOS ships **no default production credentials.** A fresh
 schema load seeds the initial administrator account per upstream's database
 setup (see `database/mysql/` in the app repo); create your own provider/admin
 accounts through the Administration UI immediately and disable any seed
@@ -503,7 +554,7 @@ invariants, exit codes) are preserved; what moved is *provisioning*.
 The five installed helper shell scripts are gone entirely — their logic is CLI
 subcommands, and the systemd units now `ExecStart` the CLI directly:
 
-```
+```text
 <instance>-backup.service          ExecStart=/usr/local/sbin/carlos-ctl backup full
 <instance>-binlog.service          ExecStart=/usr/local/sbin/carlos-ctl backup binlogs
 <instance>-docs.service            ExecStart=/usr/local/sbin/carlos-ctl backup docs
@@ -523,7 +574,7 @@ call the old scripts against the new credential layout.
 flow was "edit `carlos-app.env`, run `carlos-ctl play`" (play re-rendered the
 pod specs from it every time). The new flow is:
 
-```
+```text
 edit host_vars/<instance>.yml  →  sudo ansible-playbook -i inventory ansible/site.yml  →  carlos-ctl play
 ```
 
@@ -672,7 +723,7 @@ every instance but one when several share a machine.
 
 List everything allocated on the host before adding another instance:
 
-```console
+```text
 $ sudo carlos-ctl instances
 INSTANCE     EMR_HOME                 BIND_IP          HTTPS→PUB     LOGVIEW  VLOGS  VMETR  PMA    STATUS
 carlos       /usr/local/emr           192.168.20.250   443→8443      9443     9428   8428   9444   active
@@ -735,7 +786,7 @@ CARLOS locates its override properties file via the JVM flag
 `-Dcarlos_override_properties=/run/carlos-config/carlos.properties` (set in
 `CATALINA_OPTS` in the pod spec). Your editable base file
 
-```
+```text
 $EMR_HOME/container/conf/carlos/carlos.properties
 ```
 
@@ -817,7 +868,9 @@ the **official** `mariadb` image instead of the old custom-built
 - **Take a backup first** (`mariadb-dump` from the old pod, or a filesystem
   copy of `mariadb-mnt` while stopped). The upgrade is one-way.
 
-**Blank-datadir guard.** A deployed instance whose datadir suddenly holds no
+### Blank-datadir guard
+
+A deployed instance whose datadir suddenly holds no
 `mysql/` system schema means the data volume is unmounted or wiped — and
 MariaDB would silently initialize a **blank** database over the empty
 mountpoint. Three layers refuse that, sharing one signature definition:
@@ -829,7 +882,9 @@ in-pod `db-init` initContainer is the hard stop even if both are bypassed.
 installs need nothing — the guard only arms after the first successful
 `play`).
 
-**Schema:** CARLOS's schema is now Flyway-managed upstream: a consolidated
+### Schema
+
+CARLOS's schema is now Flyway-managed upstream: a consolidated
 `V1` genesis baseline plus sequential forward migrations under
 `database/mysql/migration/{common,on,bc}/` (the legacy
 `createdatabase_*.sh`/`oscarinit*.sql`/`oscardata.sql` build was retired —
@@ -930,7 +985,9 @@ For ad-hoc database work — shell, exports, imports — see
 break-glass/audit caveats at the end of the
 [phpMyAdmin](#phpmyadmin-on-demand-database-admin) section).
 
-**Container privilege model.** Root is used only where function demands it,
+### Container privilege model
+
+Root is used only where function demands it,
 and never with Podman's full default capability set. Every container carries
 `allowPrivilegeEscalation: false` and `seccompProfile: RuntimeDefault`, and
 every container except the WAF and the run-once initContainers runs on a
@@ -970,7 +1027,9 @@ uid 999 — all guarded, so later starts skip them; a large log store may take
 a moment. (The datadir guard is normally a no-op: the image's own root
 entrypoint kept it 999-owned before this deployment went non-root.)
 
-**Rootless engine.** "Rootless" has two senses. The per-container work above
+### Rootless engine
+
+"Rootless" has two senses. The per-container work above
 narrows what a compromised container can do; the engine itself is also
 rootless: the three pods run in a **dedicated service user's**
 (`carlos_service_user`, default `carlos`) Podman engine as `systemd --user`
@@ -1059,7 +1118,9 @@ non-root paths to verify live: a normal start against the existing datadir,
 an empty-datadir first init, and a `MARIADB_AUTO_UPGRADE` run — all as
 uid 999.
 
-**Least-privilege DB accounts (blast-radius).** After `play` (or `carlos-ctl
+### Least-privilege DB accounts
+
+Blast-radius containment: after `play` (or `carlos-ctl
 db-users`) the app connects to MariaDB as **`carlos`**, DrugRef as
 **`drugref`**, each with privileges scoped to **its own schema only**
 (`GRANT ALL ON oscar.*` / `drugref2.*`) — not root and not `*.*`. The metrics
@@ -1285,7 +1346,7 @@ default; with the profile off, the journald floor below is the entire logging
 story and there are no metrics — see
 [The observability pod is optional](#the-observability-pod-is-optional).)
 
-```
+```text
 carlos-waf pod (journald log driver)
   waf  ── stdout/stderr ──> HOST systemd journal
 carlos-app pod (journald log driver)
@@ -1302,7 +1363,9 @@ carlos-obs pod                            │  + victorialogs, below)     v
                                                                         carlos-ctl monitor)
 ```
 
-**Logs.** First stop: `carlos-ctl logs [carlos|db|drugref|waf|<container>]
+### Logs
+
+First stop: `carlos-ctl logs [carlos|db|drugref|waf|<container>]
 [-f]` tails a container's logs without remembering pod-name prefixes or the
 runuser boundary (it resolves the short names to `<instance>-app-carlos`
 etc. and follows with `-f`). Underneath, the app and waf pods run with
@@ -1322,7 +1385,9 @@ error log. The playbook enables persistent journald; size `SystemMaxUse`
 (and the rate-limit caveat) per [Requirements](#requirements) to cover the
 longest VictoriaLogs outage you want to backfill.
 
-**Metrics.** `node-exporter` (host — mounts host `/` **read-only** at
+### Metrics
+
+`node-exporter` (host — mounts host `/` **read-only** at
 `/host/root` so `node_filesystem_*` reflects the host **root** filesystem
 for the DiskLow rule; separately-mounted volumes still do not appear as
 series, so the monitor's statvfs sweep remains the authoritative
@@ -1348,7 +1413,9 @@ pod) continuously evaluates the alert rules in
 `conf/vmalert/rules.yml` against the co-located store — see
 [Alerting & health monitoring](#alerting--health-monitoring).
 
-**Viewing — the "slim SIEM" (HTTPS, authenticated, no SSH):** open
+### Viewing — the "slim SIEM"
+
+HTTPS, authenticated, no SSH: open
 `https://<SERVER_NAME>:9443/select/vmui/` (logs) or
 `https://<SERVER_NAME>:9443/vmui/` (metrics) and sign in with the log-view
 user (the playbook generates the password and prints it **once** in the play
@@ -1363,7 +1430,7 @@ stores — ingestion/admin endpoints (including VM's `/api/v1/write`) return
 
 Security-review starter queries (LogsQL):
 
-```
+```text
 _stream:{stream="carlos"} "Login!@#$"      # CARLOS login security events (blocked/inactive accounts)
 _stream:{stream="waf-error"} ModSecurity   # WAF/CRS rule alerts
 _stream:{stream="waf-access"} " 403 "      # requests blocked at the edge
@@ -1479,7 +1546,7 @@ which strictly dominate the log copy. `carlos_obs_http_auth: false` restores
 the legacy unauthenticated posture for sites that need it (see
 [Secrets](#secrets) and the obs pod template).
 
-### Compliance risk register (accepted risks at a glance)
+## Compliance risk register (accepted risks at a glance)
 
 The postures below are deliberate defaults, each documented in depth in its
 own section; this table exists so a privacy/security review (HIPAA/PIPEDA)
@@ -1645,7 +1712,9 @@ treat break-glass access as a logged, reviewed event.
 
 ## Secrets
 
-**Single master (SOPS + age).** All reversible secrets are consolidated into
+### Single master (SOPS + age)
+
+All reversible secrets are consolidated into
 **one age-encrypted bundle** —
 `$EMR_HOME/container/conf/secrets/secrets.enc.yaml` — encrypted with
 [Mozilla **SOPS**](https://github.com/getsops/sops) to the instance's **age**
@@ -1724,7 +1793,9 @@ the complementary control** — it covers the datadir, documents, logs, the TLS
 key, and the age key at rest in one stroke (`systemd-cryptenroll` can bind
 the LUKS key to the TPM for unattended boot).
 
-**Sealing — consolidate into the single-master bundle:**
+### Sealing
+
+Consolidate into the single-master bundle:
 
 ```bash
 sudo carlos-ctl seal      # needs `sops` and `age` on the host
@@ -1769,7 +1840,9 @@ this: no bundle, the plaintext base files are used as-is. `db-users`/`rotate`
 fold new values straight into the bundle; `carlos-ctl play` starts
 `<instance>-secrets.service` before the pod.
 
-**Portable disaster recovery (the reason for age).** The old per-secret TPM
+### Portable disaster recovery
+
+The reason for age: the old per-secret TPM
 sealing was **host-bound** — sealed blobs decrypt only on the original
 hardware. The age master is **portable**: the encrypted bundle **rides
 inside the restic backup** (safe — it's encrypted), so a full recovery on
@@ -2025,7 +2098,8 @@ assert already requires for the vars.
 The third artifact, **opt-in only** (`auto` never selects it): instead of
 building locally, `carlos-ctl build` pulls the pinned release's **prebuilt
 multi-arch image** — published per app release, via a **manual dispatch** of
-this repo's *Publish Images* workflow (see the supply-chain section), to
+this repo's *Publish Images* workflow (see
+[Supply chain & published images](#supply-chain--published-images)), to
 `ghcr.io/carlos-emr/carlos-app` / `ghcr.io/carlos-emr/carlos-drugref` — **by
 digest**, and feeds it through the exact same `:build-<stamp>` →
 `:previous`/`:latest` promotion, smoke test, rollback, and pod machinery as
@@ -2341,7 +2415,7 @@ binary log OFF *for the rest of the server process* the first time it cannot
 open a new binlog file — a full `data/mariadb-binlog` volume (`ENOSPC`) or an
 ownership/permission change on it (`EACCES`) is enough:
 
-```
+```text
 [ERROR] Could not use /var/lib/mysql-binlog/binlog.000006 for logging (error 13).
 Turning logging off for the whole duration of the MariaDB server process.
 To turn it on again: fix the cause, shutdown the MariaDB server and restart it.
@@ -2485,7 +2559,9 @@ off) — without it the drill fails rather than green-lighting an unexercised
 PITR chain. `CARLOS_ACCEPT_LOCAL_REPO=1` accepts a local-only repository
 (see above).
 
-**Guided point-in-time restore.** `carlos-ctl backup restore` loads the last
+### Guided point-in-time restore
+
+`carlos-ctl backup restore` loads the last
 nightly dump into the **live** database and replays the shipped binlogs from
 the dump's own anchor (read automatically from the dump header — no
 hand-typed `MASTER_LOG_POS`). It is **safe by default**: `--dry-run` shows
@@ -2581,66 +2657,9 @@ your escrow, not the bundle: the bundle rides *inside* the repo they unlock.
 Practice this on scratch hardware before you need it; the weekly drill proves
 the data restores, not that YOU can drive the sequence under pressure.
 
-### Troubleshooting: a container won't start
+### Restore drill
 
-- `runuser -u <SERVICE_USER> -- podman ps -a --pod` — which container is
-  restarting/exited; `podman logs <pod>-<name>` (or `journalctl` for the
-  journald-driver pods) for the reason.
-- **db crash-loop on an adopted datadir**: almost always the documented
-  `innodb_page_size` mismatch (the cnf ships 32K; stock MariaDB datadirs are
-  16K — the db stream says exactly this) or a datadir newer than the db
-  image.
-- **db-init refuses with `FATAL: … no initialized MariaDB datadir`**: the
-  blank-datadir guard — the data volume looks unmounted or wiped on a
-  deployed instance. Mount the data volume; `CARLOS_ACCEPT_EMPTY_DATADIR=1`
-  + `carlos-ctl play` only if a fresh datadir is intended.
-- **db crash-loop `File '/var/lib/mysql-binlog/binlog.index' … Permission
-  denied`** on an *adopted* binlog directory: db-init chowns the datadir
-  recursively but the binlog dir non-recursively (a fresh install's binlog
-  dir is empty, so the dir chown suffices). Binlog files carried over from
-  another install and owned by a different uid then block the db uid. Fix
-  once with `chown -R 999:999 $EMR_HOME/data/mariadb-binlog` (999 = the
-  docker-library mariadb uid; on a rootless host use the mapped subuid).
-- **carlos/drugref exit with `FATAL: db_password is __SEALED__`**: the
-  secrets unit failed to render — `journalctl -u <instance>-secrets.service`;
-  a TPM/Secure-Boot change means re-sealing with the escrowed age key.
-- **waf exits immediately**: missing TLS material (play preflights it now) or
-  the `BACKEND` hostname not resolving (aardvark registering container names —
-  `carlos-ctl check` names the fix), or an Apache-style `WAF_SSL_PROTOCOLS`
-  carried over (play warns).
-- **every pod volume fails with `statfs …: permission denied`** (`kube play`
-  dies on its first mount): the shared parents under `$EMR_HOME` are
-  root-owned and not traversable by the service user. Fixed in the role
-  (the traversal parents — `$EMR_HOME`, `container/`, `container/conf/`,
-  `data/`, `logs/`, `metrics/` — are now declared explicitly with their own
-  owner/mode); re-run the playbook. Check with
-  `namei -l $EMR_HOME/container/conf/carlos/carlos.properties`: `conf/` must
-  be `root:<service user>` `0750`, and `data/`, `logs/`, `metrics/` must be
-  service-user-owned `0750`.
-- **`carlos-obs-logcollect` (vector) crash-loops with `Missing environment
-  variable in config`**: vector env-interpolates its config file — comments
-  included — before parsing it, so ANY un-doubled `$` in
-  `conf/vector/journald-collector.toml` is fatal. Double it (`$$`).
-- **`carlos-app-vmagent` restarts silently and no metrics arrive**: vmagent
-  hard-fails on an unparseable `conf/vmagent/scrape.yml`. With the app pod on
-  the journald log driver its output is invisible to `podman logs`, so run the
-  image by hand to see it, or just
-  `python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' \
-  $EMR_HOME/container/conf/vmagent/scrape.yml`.
-- **`/drugref2` serves 404 forever and the drugref probe never greens**: the
-  DrugRef context failed to start. Against MariaDB this is almost always the
-  Hibernate dialect auto-detect — DrugRef bundles mysql-connector-j 9.x,
-  whose `getSQLKeywords()` reads `INFORMATION_SCHEMA.KEYWORDS.RESERVED`, a
-  column MariaDB does not have. The pod spec and the image now pass
-  `-Dhibernate.dialect=org.hibernate.dialect.MariaDBDialect` and
-  `-Dhibernate.boot.allow_jdbc_metadata_access=false`; re-run the playbook
-  (and rebuild for the standalone image) if a hand-edited spec lost them.
-- **pod unit `failed` in `systemctl --user`**: `carlos-ctl play` re-runs the
-  full preflight and restarts everything; the units retry forever
-  (`StartLimitIntervalSec=0`), so a fixed cause self-heals within
-  `RestartSec=30`.
-
-**Restore drill (a backup you never restore is not a backup).**
+A backup you never restore is not a backup.
 `<instance>-backup-verify.timer` runs weekly, Sundays
 (`carlos_backup_verify_oncalendar`), executing `carlos-ctl backup verify`: it
 restores this instance's latest dump (`--host <instance>-emr`) into a
@@ -2853,7 +2872,9 @@ against Caddy's auth-failure log lines (`podman logs carlos-obs-logview`); a
 Caddy `rate_limit` directive would require a custom `xcaddy` image and is
 intentionally not used.
 
-**Validating a deployment (`carlos-ctl check`).** Run it after every `play`.
+### Validating a deployment (`carlos-ctl check`)
+
+Run it after every `play`.
 It's a **read-only** end-to-end check of the running deployment — the runtime
 paths the hermetic test suite can't exercise — printing `ok`/`FAIL` per check
 and exiting nonzero if anything is wrong (so it can gate a deploy or feed
@@ -2910,7 +2931,7 @@ the instance from `$EMR_HOME` (or `--instance <name>`).
 | --- | --- | --- |
 | **missed heartbeat** (external monitor) | `systemctl status <inst>-monitor.timer`; `carlos-ctl check` | Host down / monitor timer dead / total outage. If the host is up, restart the timer; if the whole box is unreachable, this is the DR path (see the disaster-recovery runbook). |
 | **container-down-…** | `runuser -u <svc> -- podman ps -a`; `podman logs <pod>-<ctr>` | Crash loop (bad config/secret, OOM). Fix the cause, `carlos-ctl play`. A blank/unmounted datadir pages the guard — see "a container won't start". |
-| **MysqlDown / app-db-root** | `carlos-ctl db -e 'SELECT 1'` | DB not accepting connections, or app still on root: run `carlos-ctl db-users` (see "Database: least-privilege accounts"). |
+| **MysqlDown / app-db-root** | `carlos-ctl db -e 'SELECT 1'` | DB not accepting connections, or app still on root: run `carlos-ctl db-users` (see [Least-privilege DB accounts](#least-privilege-db-accounts)). |
 | **DiskLow** | `df -h $EMR_HOME`; `du -sh $EMR_HOME/backup/mariadb-hot/* $EMR_HOME/logs/*.hprof 2>/dev/null` | See the reclaim order below. |
 | **backup-stamp-stale / restore-drill-stale** | `carlos-ctl backup status`; `journalctl -u <inst>-backup.service` | Backup/verify timer failing — read the unit log, fix the repo/creds, `systemctl start <inst>-backup.service`. A stale drill means the last restore test did not complete: investigate before trusting the backups. |
 | **cert-served-mismatch / cert-expiry** | `curl -skI https://<server>/` | Renew the cert at `$EMR_HOME/container/conf/waf/certs/`, then `carlos-ctl play` (or restart the WAF pod). |
@@ -2920,9 +2941,36 @@ the instance from `$EMR_HOME` (or `--instance <name>`).
 | **hostfw-table-missing** | `nft list table inet <inst>-hostfw`; `systemctl status <inst>-nft.service` | The default-deny host firewall is NOT loaded (the apply unit is fail-open) — the host is running unfirewalled. Fix the ruleset error in the unit log, `systemctl restart <inst>-nft.service`, and confirm the guard/monitor stop paging. |
 | **waf-access-stream-silent** | `journalctl -u <inst>-obs.service \| grep logcollect`; check the WAF access log | Zero waf-access lines reached the log store in an hour on a deployed instance (the monitor's own probes guarantee traffic) — 5xx surveillance is blind. Either log shipping is down (restart the obs pod) or the WAF log format/stream label drifted (update the monitor's regex in the same change). |
 | **failed-unit-…** | `systemctl status <unit>` | A system unit for this instance is sitting in a FAILED state (its one OnFailure page may have been missed). Fix the cause, then `systemctl reset-failed <unit>`. |
-| **no MariaDB metrics** (obs profile; `mysqld_up` absent, MysqlDown never evaluates) | `stat -c '%u:%g' $EMR_HOME/container/conf/metrics/exporter.my.cnf` | The mysqld-exporter reads that 0600 file as container uid **65534**, so on the host it must be owned by the service user's subuid for 65534 (a five- or six-digit uid, e.g. `231069:231069`) — **not** `root:root` and **not** `<svc>:root`. A root-written replacement left group-root cannot be handed over: `chown(2)` refuses a file whose owner *or group* is outside the rootless userns id_map, and host uid/gid 0 are never in it, so `podman unshare chown` fails with EPERM. `carlos-ctl play` repairs it (it re-hands the file to `<svc>:<svc>` first, then maps it); the same applies to `conf/caddy/Caddyfile` and container uid **10013** for the log view. **If the chown fails with `EINVAL` rather than `EPERM`, the id is not in the map at all**: check `awk -F: '$1=="<svc>"' /etc/subuid /etc/subgid` — the third field must exceed 65534, and rootless Podman maps from the FIRST grant only, so widen that one (appending a second range does not help) and re-run `podman system migrate`. `carlos-ctl build`/`play` warn about this; the role asserts it. |
+| **no MariaDB metrics** (obs profile; `mysqld_up` absent, MysqlDown never evaluates) | `stat -c '%u:%g' $EMR_HOME/container/conf/metrics/exporter.my.cnf` | The exporter credential file is owned by the wrong uid — `carlos-ctl play` repairs it. Root cause and the EPERM/EINVAL distinction: see the subuid-ownership note below this table. |
+| **waf-5xx-burst** (obs profile) | `carlos-ctl logs waf`; check recent deploys | The WAF served more 5xx responses than the threshold (`WAF_5XX_MAX`, default 25, per `WAF_5XX_WINDOW_MIN`, default 10 min) — the app is up but erroring; check the DB connection pool and the last deploy (liveness probes stay green while `/carlos/` still 302s). |
+| **pma-lingering** | `runuser -u <svc> -- podman ps` | Break-glass phpMyAdmin is still running — if no active admin session, stop it (a dropped SSH tunnel can leave it serving; the `--ttl` bound auto-removes it eventually). |
+| **db-not-accepting** | `carlos-ctl db -e 'SELECT 1'` | The db container runs but MariaDB is not accepting connections on 3306 — check `carlos-ctl logs db` for a crash/recovery loop. |
+| **front-door-nat-missing** | `nft list table ip <inst>-nat` | The DNAT table (or its prerouting rule) is gone — external clients cannot reach the EMR even though on-host probes read healthy; `systemctl restart <inst>-nft.service`. |
+| **vm-wedged / vmalert-unreachable / vmalert-response-malformed** (obs profile) | `curl -s 127.0.0.1:<port>/health` | The metrics store or rule evaluator is up but not answering (or answering garbage) — every metric-derived rule silently reads green; restart the obs pod. |
+| **cert-file-missing** | `ls -l $EMR_HOME/container/conf/waf/certs/` | The served cert/key file vanished on a deployed instance — expiry monitoring is blind and the next WAF restart will fail; restore the cert+key. |
+| **accept-empty-marker-present** | `ls $EMR_HOME/container/guard/` | The blank-datadir guard is disarmed by a leftover `accept-empty-datadir` marker — re-run `carlos-ctl play` to clear it. |
+| **alert-channel-unset** | check `ALERT_WEBHOOK` / `ALERT_EMAIL` in `carlos-app.env` | A deployed instance has no alert channel configured — pages only reach the local journal; set a channel (or ack with `ALERT_JOURNAL_ONLY=1`). |
+| **waf-db-isolation-unverified** | `carlos-ctl check` | The WAF→DB isolation probe could not run at all (podman exec failed) — the boundary is unverified, which is treated as a fault, not health. |
 | **waf-db-isolation-broken** | `carlos-ctl check` | The edge pod can reach MariaDB on 3306 — the WAF/DB boundary is broken (usually a hand-edited `bind_address` in zz-carlos.cnf). Merge `bind_address = 127.0.0.1` back and re-play. |
 | **no-heartbeat-configured** (weekly) | — | Standing reminder that CARLOS_NO_HEARTBEAT=1 is acked on a deployed instance: a total host/monitor death is invisible. Set HEARTBEAT_URL to close the blind spot. |
+
+#### Subuid ownership of exporter/log-view config files
+
+The mysqld-exporter reads its 0600 credential file as container uid
+**65534**, so on the host it must be owned by the service user's subuid for
+65534 (a five- or six-digit uid, e.g. `231069:231069`) — **not** `root:root`
+and **not** `<svc>:root`. A root-written replacement left group-root cannot
+be handed over: `chown(2)` refuses a file whose owner *or group* is outside
+the rootless userns id_map, and host uid/gid 0 are never in it, so
+`podman unshare chown` fails with `EPERM`. `carlos-ctl play` repairs it (it
+re-hands the file to `<svc>:<svc>` first, then maps it); the same applies to
+`conf/caddy/Caddyfile` and container uid **10013** for the log view. If the
+chown fails with `EINVAL` rather than `EPERM`, the id is not in the map at
+all: check `awk -F: '$1=="<svc>"' /etc/subuid /etc/subgid` — the third field
+must exceed 65534, and rootless Podman maps from the FIRST grant only, so
+widen that one (appending a second range does not help) and re-run
+`podman system migrate`. `carlos-ctl build`/`play` warn about this; the role
+asserts it.
 
 **Disk-full reclaim order** (safe first): delete analysed `*.hprof` heap
 dumps in `$EMR_HOME/logs`; prune old manual `$EMR_HOME/backup/mariadb-hot/*`
@@ -2954,6 +3002,67 @@ the host OS and reboot safely:
    reboot; if it fails, re-seal from the escrowed age key (see "Secrets").
    This is why step 1's backup + the off-host age-key escrow are
    non-negotiable before a firmware/kernel update.
+
+## Troubleshooting
+
+### A container won't start
+
+- `runuser -u <SERVICE_USER> -- podman ps -a --pod` — which container is
+  restarting/exited; `podman logs <pod>-<name>` (or `journalctl` for the
+  journald-driver pods) for the reason.
+- **db crash-loop on an adopted datadir**: almost always the documented
+  `innodb_page_size` mismatch (the cnf ships 32K; stock MariaDB datadirs are
+  16K — the db stream says exactly this) or a datadir newer than the db
+  image.
+- **db-init refuses with `FATAL: … no initialized MariaDB datadir`**: the
+  blank-datadir guard — the data volume looks unmounted or wiped on a
+  deployed instance. Mount the data volume; `CARLOS_ACCEPT_EMPTY_DATADIR=1`
+  + `carlos-ctl play` only if a fresh datadir is intended.
+- **db crash-loop `File '/var/lib/mysql-binlog/binlog.index' … Permission
+  denied`** on an *adopted* binlog directory: db-init chowns the datadir
+  recursively but the binlog dir non-recursively (a fresh install's binlog
+  dir is empty, so the dir chown suffices). Binlog files carried over from
+  another install and owned by a different uid then block the db uid. Fix
+  once with `chown -R 999:999 $EMR_HOME/data/mariadb-binlog` (999 = the
+  docker-library mariadb uid; on a rootless host use the mapped subuid).
+- **carlos/drugref exit with `FATAL: db_password is __SEALED__`**: the
+  secrets unit failed to render — `journalctl -u <instance>-secrets.service`;
+  a TPM/Secure-Boot change means re-sealing with the escrowed age key.
+- **waf exits immediately**: missing TLS material (play preflights it now) or
+  the `BACKEND` hostname not resolving (aardvark registering container names —
+  `carlos-ctl check` names the fix), or an Apache-style `WAF_SSL_PROTOCOLS`
+  carried over (play warns).
+- **every pod volume fails with `statfs …: permission denied`** (`kube play`
+  dies on its first mount): the shared parents under `$EMR_HOME` are
+  root-owned and not traversable by the service user. Fixed in the role
+  (the traversal parents — `$EMR_HOME`, `container/`, `container/conf/`,
+  `data/`, `logs/`, `metrics/` — are now declared explicitly with their own
+  owner/mode); re-run the playbook. Check with
+  `namei -l $EMR_HOME/container/conf/carlos/carlos.properties`: `conf/` must
+  be `root:<service user>` `0750`, and `data/`, `logs/`, `metrics/` must be
+  service-user-owned `0750`.
+- **`carlos-obs-logcollect` (vector) crash-loops with `Missing environment
+  variable in config`**: vector env-interpolates its config file — comments
+  included — before parsing it, so ANY un-doubled `$` in
+  `conf/vector/journald-collector.toml` is fatal. Double it (`$$`).
+- **`carlos-app-vmagent` restarts silently and no metrics arrive**: vmagent
+  hard-fails on an unparseable `conf/vmagent/scrape.yml`. With the app pod on
+  the journald log driver its output is invisible to `podman logs`, so run the
+  image by hand to see it, or just
+  `python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' \
+  $EMR_HOME/container/conf/vmagent/scrape.yml`.
+- **`/drugref2` serves 404 forever and the drugref probe never greens**: the
+  DrugRef context failed to start. Against MariaDB this is almost always the
+  Hibernate dialect auto-detect — DrugRef bundles mysql-connector-j 9.x,
+  whose `getSQLKeywords()` reads `INFORMATION_SCHEMA.KEYWORDS.RESERVED`, a
+  column MariaDB does not have. The pod spec and the image now pass
+  `-Dhibernate.dialect=org.hibernate.dialect.MariaDBDialect` and
+  `-Dhibernate.boot.allow_jdbc_metadata_access=false`; re-run the playbook
+  (and rebuild for the standalone image) if a hand-edited spec lost them.
+- **pod unit `failed` in `systemctl --user`**: `carlos-ctl play` re-runs the
+  full preflight and restarts everything; the units retry forever
+  (`StartLimitIntervalSec=0`), so a fixed cause self-heals within
+  `RestartSec=30`.
 
 ## Resource limits, JVM heap & health checks
 
@@ -3024,7 +3133,9 @@ PID caps are applied via Podman's `io.podman.annotations.pids-limit/<ctr>`
 pod annotations (a `pids` entry under `resources.limits` is **not** read by
 `podman kube play` — only `cpu`/`memory` are).
 
-**Liveness probes.** `carlos`, `drugref`, `db`, and `waf` carry an exec
+### Liveness probes
+
+`carlos`, `drugref`, `db`, and `waf` carry an exec
 liveness probe. These are `exec` probes on purpose: `podman kube play`
 rewrites `httpGet`/`tcpSocket` probes into in-container `curl`/`nc` calls,
 which those images do not all ship — a bash `/dev/tcp` check needs only the
@@ -3059,7 +3170,11 @@ bounces the app (so the post-provision app start races against an
 already-ready db). If the app still comes up before the db on a very slow
 first init, `carlos-ctl play` once more after the db is healthy.
 
-**Supply chain (release builds).** The `maven`/`tomcat` base images in the
+## Supply chain & published images
+
+### Release builds
+
+The `maven`/`tomcat` base images in the
 `Containerfile`s are digest-pinned (like every third-party runtime image —
 mariadb, restic, exporters, vector, caddy, victoria*, vmalert), and
 `carlos-ctl build` runs `--no-cache` by default so a same-ref rebuild can
@@ -3106,7 +3221,9 @@ install inside a digest-pinned base image (an already integrity-pinned
 lineage), so per-package pins would add checksum-maintenance churn without a
 meaningful supply-chain gain.
 
-**Published prebuilt images (ghcr.io).** The two images this repo customizes
+### Published prebuilt images (ghcr.io)
+
+The two images this repo customizes
 are also published, pre-built, to GitHub Container Registry by the
 **Publish Images** workflow (`.github/workflows/publish-images.yml`,
 manually dispatched per app release):
@@ -3145,7 +3262,9 @@ verified-WAR chains.
 — after the first publish, an org admin must set both packages public and
 confirm they're linked to this repo.)
 
-**TLS-inspecting egress proxy.** On a host whose outbound HTTPS is
+### TLS-inspecting egress proxy
+
+On a host whose outbound HTTPS is
 re-terminated by a corporate/hospital proxy, the in-image Maven dependency
 fetch fails PKIX validation. Point `CARLOS_EXTRA_CA_BUNDLE` at the proxy's CA
 bundle (a PEM file) and `carlos-ctl build` stages it into the build context;
