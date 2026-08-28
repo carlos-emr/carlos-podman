@@ -98,8 +98,9 @@ _ROOT_TUNABLES = [
 # only — though the save path is still allowlisted in the app's
 # FrmRecordFactory, so it is retired by configuration, not enforced.
 #
-# Matched on BARE TABLE NAME, case-insensitively: the schema is `oscar` on a
-# stock install but need not be, and MariaDB table names are case-sensitive
+# Matched on BARE TABLE NAME, case-insensitively: the schema is `carlos` on a
+# stock install (`oscar` before the default rename) but need not be, and
+# MariaDB table names are case-sensitive
 # on Linux while the DDL casing has drifted across upstream migrations.
 # Keep this list SHORT and evidence-backed — every entry is a permanently
 # accepted PITR gap. A non-InnoDB table that is narrow enough to convert must
