@@ -1010,6 +1010,17 @@ def cmd_play(runner: Runner, args: List[str]) -> int:
 
     # One-time oscar -> CARLOS_DB_NAME schema adoption (the default rename)
     # runs BEFORE provisioning so the grants land on the adopted name.
+    #
+    # INVARIANT (review finding): the app pod is already started above, so this
+    # adoption races the app's own DB connection during wait_db_accepting. Its
+    # safety — RENAME oscar -> carlos only when carlos is absent/empty, refuse a
+    # non-empty carlos — depends on the app being UNABLE to auto-create a
+    # populated `carlos` in that window. Today it can't: the JDBC URL sets no
+    # `createDatabaseIfNotExist=true` and the pod sets no `MARIADB_DATABASE`, so
+    # Tomcat/Flyway cannot materialize a `carlos` schema on its own. Do NOT add
+    # either without moving this adoption before the app pod starts — otherwise
+    # the app could create+migrate a fresh `carlos` mid-wait, flip adoption to
+    # the refuse-merge branch, and strand the real data in `oscar`.
     dbops.maybe_adopt_default_schema(runner)
     db_least_priv_ok = dbops.maybe_provision_db_users(runner)
     # Confirm the app is actually SERVING before any go-live bookkeeping.

@@ -189,45 +189,51 @@
     path: "{{ carlos_data_dir }}/OscarDocument"
   register: _oscar_docs
 
-- name: Rename OpenoDocument -> OscarDocument (one-time migration)
-  ansible.builtin.command:
-    cmd: mv "{{ carlos_data_dir }}/OpenoDocument" "{{ carlos_data_dir }}/OscarDocument"
-  # The when-gate admits only the one state where the rename happens.
-  changed_when: true
-  when: _openo_docs.stat.isdir | default(false) and not _oscar_docs.stat.exists
-
-# Chained after the OpenO adoption so an ancient install walks
-# Openo -> Oscar -> Carlos in one play. Same stat discipline: only the one
-# state where the rename applies is admitted, so a directory an operator
-# deliberately (re)creates under the old name next to an existing
-# CarlosDocument is never touched.
 - name: Detect a CarlosDocument document directory
   ansible.builtin.stat:
     path: "{{ carlos_data_dir }}/CarlosDocument"
   register: _carlos_docs
 
 # Two REAL document stores is the one state that risks silently splitting
-# patient documents: the mv below would be skipped, the pod would mount
-# CarlosDocument only, and backups/guards (config.document_store) would
-# follow CarlosDocument too — stranding everything still under OscarDocument
-# from both the app and the backups, with no error. Fail loudly instead
-# (mirrors the deb's refuse-and-stop), so an operator consolidates by hand.
-# A CarlosDocument SYMLINK (the inner-segment compat link is at
-# CarlosDocument/oscar, not here) or the normal post-rename state does not
-# trip this — it needs two independent real directories.
-- name: Refuse to proceed when both document stores exist as real directories
+# patient documents: a legacy store (OpenoDocument or OscarDocument) left next
+# to a real CarlosDocument would be mounted nowhere — the pod mounts
+# CarlosDocument only, and backups/guards (config.document_store) follow
+# CarlosDocument too — stranding the legacy store from both the app and the
+# backups, with no error. Refuse BEFORE any rename, evaluated against the
+# up-front stats above so no in-play `mv` (the Openo -> Oscar step below can
+# materialize a real OscarDocument) can make this check stale and slip past it
+# (mirrors the deb's refuse-and-stop), so an operator consolidates by hand. A
+# SYMLINK under any of the three names (the inner-segment compat link is at
+# CarlosDocument/oscar, not here) or the normal post-rename state does not trip
+# this — it needs a real CarlosDocument alongside a real legacy directory.
+- name: Refuse to proceed when a legacy document store coexists with CarlosDocument
   ansible.builtin.fail:
     msg: >-
-      Both {{ carlos_data_dir }}/OscarDocument and
-      {{ carlos_data_dir }}/CarlosDocument exist as real directories. Refusing
-      to pick or merge a patient-document store. Consolidate the two by hand
-      (the live data is in whichever this instance has been serving), remove
-      the stale one, then re-run the play.
+      A legacy document store ({{ carlos_data_dir }}/OpenoDocument or
+      {{ carlos_data_dir }}/OscarDocument) exists as a real directory alongside
+      {{ carlos_data_dir }}/CarlosDocument. Refusing to pick or merge a
+      patient-document store. Consolidate them by hand (the live data is in
+      whichever this instance has been serving), remove the stale one, then
+      re-run the play.
   when:
-    - _oscar_docs.stat.isdir | default(false)
-    - not (_oscar_docs.stat.islnk | default(false))
     - _carlos_docs.stat.isdir | default(false)
     - not (_carlos_docs.stat.islnk | default(false))
+    - (_oscar_docs.stat.isdir | default(false) and not (_oscar_docs.stat.islnk | default(false)))
+      or (_openo_docs.stat.isdir | default(false) and not (_openo_docs.stat.islnk | default(false)))
+
+# Chained renames walk an ancient install Openo -> Oscar -> Carlos in one play.
+# They run only AFTER the refusal above has ruled out a real CarlosDocument
+# coexisting with a legacy store, so no `mv` here can strand a store the guard
+# would have caught. Same stat discipline: only the one state where each rename
+# applies is admitted, so a directory an operator deliberately (re)creates under
+# an old name next to an existing CarlosDocument is never touched (the guard has
+# already stopped that case). The Oscar -> Carlos gate ORs in _openo_docs so it
+# still fires off the up-front stat after the Openo -> Oscar mv above.
+- name: Rename OpenoDocument -> OscarDocument (one-time migration)
+  ansible.builtin.command:
+    cmd: mv "{{ carlos_data_dir }}/OpenoDocument" "{{ carlos_data_dir }}/OscarDocument"
+  changed_when: true
+  when: _openo_docs.stat.isdir | default(false) and not _oscar_docs.stat.exists
 
 - name: Rename OscarDocument -> CarlosDocument (one-time migration)
   ansible.builtin.command:
