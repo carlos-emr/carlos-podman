@@ -1413,16 +1413,29 @@ def _verify_docs_content(ctx: BackupContext) -> bool:
     rel = oldest.relative_to(store)
     sentinel = ctx.backup_dir / f".verify-doc.{os.getpid()}"
     try:
-        # The newest docs snapshot right after the OscarDocument ->
-        # CarlosDocument rename still carries the old mount path, so try the
-        # canonical name first and fall back to the pre-rename one.
+        # The newest docs snapshot right after the rename still carries the
+        # PRE-rename path, which changed in TWO places: the outer mount root
+        # (OscarDocument -> CarlosDocument) AND the inner instance segment
+        # (oscar -> carlos). `rel` comes from the live post-rename tree, so
+        # its leading segment is the new inner name; the OscarDocument
+        # fallback must swap that leading segment back to `oscar` or it can
+        # never match a pre-rename snapshot. Try the canonical path first,
+        # then the fully pre-rename path.
+        rel_parts = rel.parts
+        rel_oscar = rel
+        if rel_parts and rel_parts[0] == "carlos":
+            rel_oscar = Path("oscar", *rel_parts[1:])
+        candidates = [
+            f"/backup/CarlosDocument/{rel}",
+            f"/backup/OscarDocument/{rel_oscar}",
+        ]
         cp = None
-        for snap_root in ("/backup/CarlosDocument", "/backup/OscarDocument"):
+        for snap_path in candidates:
             fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as f:
                 cp = ctx.run_restic(
                     ["dump", "latest", "--host", ctx.snapshot_host, "--tag", "docs",
-                     f"{snap_root}/{rel}"],
+                     snap_path],
                     stdout=f,
                 )
             if cp.returncode == 0:
@@ -1847,8 +1860,11 @@ def _verify_restore(ctx: BackupContext) -> bool:
         # schema is absent from the restored server.
         drill_db = dbops.require_db_identifier(s)
         cp = vexec(
+            # Exact match, not SHOW DATABASES LIKE (`_` is a LIKE wildcard);
+            # drill_db is identifier-validated.
             ["mariadb", "--user=root", "-N", "-e",
-             f"SHOW DATABASES LIKE '{drill_db}'"],
+             "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "  # noqa: S608 — drill_db is identifier-validated
+             f"WHERE SCHEMA_NAME='{drill_db}'"],
             capture=True,
         )
         if not (cp.stdout or "").strip() and drill_db != "oscar":

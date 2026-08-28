@@ -475,7 +475,13 @@ def maybe_adopt_default_schema(runner: Runner) -> None:
         )
 
     def schema_exists(name: str) -> bool:
-        return bool((root_sql(f"SHOW DATABASES LIKE '{name}'").stdout or "").strip())
+        # Exact match, not SHOW DATABASES LIKE: `_` is a LIKE wildcard, so a
+        # name like `carlos_v2` would also match `carlosXv2` (a lookalike
+        # schema) and mis-route the merge/refuse logic. `name` is identifier-
+        # validated or a literal, so single-quoting is safe.
+        return bool((root_sql(
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "  # noqa: S608 — name is identifier-validated / literal
+            f"WHERE SCHEMA_NAME='{name}'").stdout or "").strip())
 
     ready, _probe_err = wait_db_accepting(
         runner, root_pw, s.get_int_or("READY_WAIT_SECONDS", 1320),
