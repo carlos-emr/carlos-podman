@@ -286,11 +286,6 @@ spec:
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
           mountPath: /var/lib/CarlosDocument
-        # Same volume at the pre-rename path (mirrors the production spec):
-        # a legacy dev database stores absolute /var/lib/OscarDocument/...
-        # paths that must keep resolving after the store rename.
-        - name: carlos-documents
-          mountPath: /var/lib/OscarDocument
         - name: carlos-work
           mountPath: /usr/local/tomcat/work
         - name: carlos-temp
