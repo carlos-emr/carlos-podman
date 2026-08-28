@@ -223,8 +223,8 @@ class TestGuardVerb:
         (d / DATADIR_SIGNATURE).mkdir(parents=True)
         (d / "mariadb-binlog").mkdir()
         (d / "mariadb-binlog" / "binlog.000001").write_text("x")
-        (d / "OscarDocument").mkdir()
-        (d / "OscarDocument" / "doc1.pdf").write_text("x")
+        (d / "CarlosDocument").mkdir()
+        (d / "CarlosDocument" / "doc1.pdf").write_text("x")
         assert cmd_guard(r) == 0
 
     def test_empty_binlog_dir_fails(self, mk_runner, capsys) -> None:
@@ -236,8 +236,8 @@ class TestGuardVerb:
         d = r.settings.data_dir
         (d / DATADIR_SIGNATURE).mkdir(parents=True)
         (d / "mariadb-binlog").mkdir()
-        (d / "OscarDocument").mkdir()
-        (d / "OscarDocument" / "doc1.pdf").write_text("x")
+        (d / "CarlosDocument").mkdir()
+        (d / "CarlosDocument" / "doc1.pdf").write_text("x")
         assert cmd_guard(r) == 1
         assert "UNMOUNTED" in capsys.readouterr().err
 

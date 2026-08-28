@@ -175,12 +175,12 @@ case "$1 $2" in
           if [[ -z "${STUB_LS_EMPTY:-}" ]]; then
               echo /backup
               if [[ "$*" == *"--tag docs"* ]]; then
-                  echo /backup/OscarDocument
-                  echo /backup/OscarDocument/doc1.pdf
+                  echo /backup/CarlosDocument
+                  echo /backup/CarlosDocument/doc1.pdf
               else
                   echo /backup/container
                   echo /backup/container/conf/secrets/secrets.enc.yaml
-                  echo /backup/OscarDocument/doc1.pdf
+                  echo /backup/CarlosDocument/doc1.pdf
               fi
           fi
       elif [[ "$*" == *" restore "*"--target /restore-scratch/binlog"* ]]; then

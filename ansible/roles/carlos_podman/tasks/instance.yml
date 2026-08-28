@@ -196,11 +196,66 @@
   changed_when: true
   when: _openo_docs.stat.isdir | default(false) and not _oscar_docs.stat.exists
 
+# Chained after the OpenO adoption so an ancient install walks
+# Openo -> Oscar -> Carlos in one play. Same stat discipline: only the one
+# state where the rename applies is admitted, so a directory an operator
+# deliberately (re)creates under the old name next to an existing
+# CarlosDocument is never touched.
+- name: Detect a CarlosDocument document directory
+  ansible.builtin.stat:
+    path: "{{ carlos_data_dir }}/CarlosDocument"
+  register: _carlos_docs
+
+- name: Rename OscarDocument -> CarlosDocument (one-time migration)
+  ansible.builtin.command:
+    cmd: mv "{{ carlos_data_dir }}/OscarDocument" "{{ carlos_data_dir }}/CarlosDocument"
+  changed_when: true
+  when: >-
+    (_oscar_docs.stat.isdir | default(false)
+     or _openo_docs.stat.isdir | default(false))
+    and not _carlos_docs.stat.exists
+
+# The instance segment inside the store follows the same rename
+# (CarlosDocument/oscar -> CarlosDocument/carlos), with a relative symlink
+# left at the old segment: together with the pod's compat mount of the
+# store at /var/lib/OscarDocument, absolute paths the application stored
+# in the database before the rename keep resolving through BOTH renamed
+# path components.
+- name: Detect the pre-rename instance segment
+  ansible.builtin.stat:
+    path: "{{ carlos_data_dir }}/CarlosDocument/oscar"
+  register: _docs_seg_oscar
+
+- name: Detect the carlos instance segment
+  ansible.builtin.stat:
+    path: "{{ carlos_data_dir }}/CarlosDocument/carlos"
+  register: _docs_seg_carlos
+
+- name: Rename the instance segment oscar -> carlos (one-time migration)
+  ansible.builtin.command:
+    cmd: mv "{{ carlos_data_dir }}/CarlosDocument/oscar" "{{ carlos_data_dir }}/CarlosDocument/carlos"
+  changed_when: true
+  register: _docs_seg_mv
+  when: >-
+    (_docs_seg_oscar.stat.isdir | default(false))
+    and not (_docs_seg_oscar.stat.islnk | default(false))
+    and not _docs_seg_carlos.stat.exists
+
+- name: Compat symlink at the old instance segment
+  ansible.builtin.file:
+    path: "{{ carlos_data_dir }}/CarlosDocument/oscar"
+    src: carlos
+    state: link
+    follow: false
+  when: >-
+    _docs_seg_mv is changed
+    or (_docs_seg_oscar.stat.islnk | default(false))
+
 # PHI at rest (scanned charts, referral letters) — same 0700 posture as the
 # MariaDB datadir; only the service user and root need in.
 - name: Ensure the document store exists
   ansible.builtin.file:
-    path: "{{ carlos_data_dir }}/OscarDocument"
+    path: "{{ carlos_data_dir }}/CarlosDocument"
     state: directory
     mode: "0700"
 
@@ -1341,7 +1396,7 @@
       - "{{ carlos_conf_dir }}/restic"
       - "{{ carlos_data_dir }}/mariadb-mnt"
       - "{{ carlos_data_dir }}/mariadb-binlog"
-      - "{{ carlos_data_dir }}/OscarDocument"
+      - "{{ carlos_data_dir }}/CarlosDocument"
       - "{{ carlos_emr_home }}/logs/carlos"
       - "{{ carlos_emr_home }}/logs/victoria-logs-data"
       - "{{ carlos_emr_home }}/logs/vector-collector-data"

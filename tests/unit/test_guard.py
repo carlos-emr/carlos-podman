@@ -30,6 +30,19 @@ class TestGuard:
         _init_datadir(r)
         (r.settings.data_dir / "mariadb-binlog").mkdir(parents=True)
         (r.settings.data_dir / "mariadb-binlog" / "binlog.000001").touch()
+        (r.settings.data_dir / "CarlosDocument").mkdir(parents=True)
+        (r.settings.data_dir / "CarlosDocument" / "doc.pdf").touch()
+        assert cmd_guard(r) == 0
+
+    def test_legacy_store_name_passes_until_renamed(self, mk_runner) -> None:
+        # Mid-transition (new carlos-ctl, playbook's one-time rename not run
+        # yet) the store still sits at the legacy OscarDocument path; the
+        # guard must keep protecting it, not fail it as unmounted.
+        r = mk_runner()
+        _deploy(r)
+        _init_datadir(r)
+        (r.settings.data_dir / "mariadb-binlog").mkdir(parents=True)
+        (r.settings.data_dir / "mariadb-binlog" / "binlog.000001").touch()
         (r.settings.data_dir / "OscarDocument").mkdir(parents=True)
         (r.settings.data_dir / "OscarDocument" / "doc.pdf").touch()
         assert cmd_guard(r) == 0
@@ -63,8 +76,8 @@ def _healthy_volumes(r) -> None:
     _init_datadir(r)
     (r.settings.data_dir / "mariadb-binlog").mkdir(parents=True, exist_ok=True)
     (r.settings.data_dir / "mariadb-binlog" / "binlog.000001").touch()
-    (r.settings.data_dir / "OscarDocument").mkdir(parents=True, exist_ok=True)
-    (r.settings.data_dir / "OscarDocument" / "doc.pdf").touch()
+    (r.settings.data_dir / "CarlosDocument").mkdir(parents=True, exist_ok=True)
+    (r.settings.data_dir / "CarlosDocument" / "doc.pdf").touch()
 
 
 class TestGuardHostfw:

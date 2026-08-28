@@ -787,7 +787,7 @@ networks, db secret, `$INSTANCE-*` units/timers/quadlets, the nftables
 redirect, the `/run` tmpfs, and its registry entry — freeing its ports and
 `EMR_HOME` for reuse. (Remove it from the inventory too, or the next playbook
 run re-provisions it.) It **preserves all data**: the MariaDB
-datadir/binlogs, `OscarDocument`, the restic repo and hot backups,
+datadir/binlogs, `CarlosDocument`, the restic repo and hot backups,
 `container/conf` (including TLS certs), and the TPM cred blobs (needed to
 decrypt those backups). It prints exactly which directories to remove by hand
 if you truly intend to destroy the data — nothing under `$EMR_HOME` is
@@ -849,13 +849,18 @@ keep it that way when editing by hand: Java properties are last-one-wins, so
 a re-added duplicate would silently win over the managed value.
 
 Document paths changed name with the fork: the container path is now
-`/var/lib/OscarDocument` (was `/var/lib/OpenoDocument`), and all
+`/var/lib/CarlosDocument` (was `/var/lib/OscarDocument`, and
+`/var/lib/OpenoDocument` before that), and all
 `DOCUMENT_DIR`-family properties in the rendered file already point there.
 Your existing files are reused — the playbook renames the host directory
-`data/OpenoDocument` → `data/OscarDocument` once (same filesystem, plain
-`mv`). If your existing tree doesn't contain the `oscar/document/...`
-subdirectories the template expects, adjust the `*_DIR` properties to match
-what you actually have on disk.
+once per generation (`data/OpenoDocument` → `data/OscarDocument` →
+`data/CarlosDocument`; same filesystem, plain `mv`), moves the inner
+`oscar/` instance segment to `carlos/` with a compat symlink at the old
+name, and the pod mounts the store at `/var/lib/OscarDocument` as well as
+`/var/lib/CarlosDocument` so absolute paths already stored in the database
+keep resolving. If your existing tree doesn't contain the
+`carlos/document/...` subdirectories the template expects, adjust the
+`*_DIR` properties to match what you actually have on disk.
 
 ## Database: keeping your MariaDB data
 
@@ -1003,7 +1008,7 @@ upstream migration README stays authoritative for both provinces.
 | Runtime | older Tomcat / JVM with CMS GC flags | Tomcat 11, JDK 21, G1 GC (`-XX:+UseConcMarkSweepGC` etc. no longer exist and would abort the JVM) |
 | Context path | `/oscar` | `/carlos` (`/` redirects) |
 | Properties | `oscar.properties` secret → `/root/oscar.properties` | host file, assembled by an initContainer into a tmpfs `emptyDir` at `/run/carlos-config/carlos.properties` via `-Dcarlos_override_properties` |
-| Documents | `/var/lib/OpenoDocument` | `/var/lib/OscarDocument` (host dir renamed once by the playbook) |
+| Documents | `/var/lib/OpenoDocument` | `/var/lib/CarlosDocument` (host dir renamed once by the playbook; compat mount at the old paths) |
 | DB image | custom `localhost/mc-demo-db` | official `mariadb` + mounted `zz-carlos.cnf`, auto-upgrade on first start |
 | DB secret | `openo-mc-demo` | `carlos-db` (same `mariadb-root-password-hash` key) |
 | DrugRef | not present (drug lookups unavailable) | in-pod `drugref` container on `127.0.0.1:8180`, same pattern as the upstream devcontainer |
@@ -1052,7 +1057,7 @@ properties, assemble the effective config into a tmpfs `emptyDir` (chowned to
 the app uid, which the app reads read-only), and chown the writable
 hostPath/emptyDir mounts. Tomcat's `ErrorReportValve` leaks neither the
 version nor stack traces. **One-time migrations** on first start after an
-upgrade: `carlos-init` chowns `logs` + the `OscarDocument` store to 10001,
+upgrade: `carlos-init` chowns `logs` + the `CarlosDocument` store to 10001,
 `obs-init` chowns the VictoriaLogs/VictoriaMetrics stores to their new
 non-root uids, `db-init` chowns the vmagent buffer and guards the datadir at
 uid 999 — all guarded, so later starts skip them; a large log store may take
@@ -2344,17 +2349,18 @@ Behavior changes an existing install should review before/after pulling:
 What each mutation path may touch — the contract the lifecycle is built on:
 
 - **Never touch `$EMR_HOME/data`** (MariaDB datadir, binlogs,
-  `OscarDocument`): `build`, `rebuild`, `play`, `rollback`, `check`,
+  `CarlosDocument`): `build`, `rebuild`, `play`, `rollback`, `check`,
   `status`, `down`, `enable`, `monitor`, `guard`. App upgrades and config
   changes cannot lose data.
 - **Read data, never write it**: `backup` (and its timers), `db-dump`,
   `db-backup`.
 - **Write data ONLY when you ask them to**: `carlos-ctl db` with an import
-  (`db oscar < dump.sql`), `backup restore` (double-confirmed), and SQL you
+  (`db carlos < dump.sql`), `backup restore` (double-confirmed), and SQL you
   run through `db`/`pma` — these are the break-glass paths and run as the
   MariaDB account you supply.
 - **The playbook adopts but never destroys**: it renames
-  `data/OpenoDocument` → `data/OscarDocument` once and creates missing
+  `data/OpenoDocument` → `data/OscarDocument` → `data/CarlosDocument`
+  once per generation and creates missing
   directories; it never overwrites an operator-owned conf/properties/secret
   file, and it regenerates a credential only when no store (plain file,
   legacy cred blob, sealed bundle) holds one.
@@ -2435,7 +2441,7 @@ order of importance:
    is still allowlisted in the app's `FrmRecordFactory` and the view routes
    are still registered, so an existing record reached by a direct URL, or a
    bulk data job touching the table, can still write to it.
-2. **`data/OscarDocument`** — patient documents (read-only mount).
+2. **`data/CarlosDocument`** — patient documents (read-only mount).
 3. **`container/`** — rendered config including the encrypted secrets bundle
    (the repository is encrypted; the plaintext `carlos-app.env`, the
    superseded plaintext `conf/restic`, and the age private key are
@@ -2511,7 +2517,7 @@ Staged plaintext dumps are reaped on the next run and on SIGTERM.
 
 *Document snapshots every 15 minutes* (`<instance>-docs.timer` → `carlos-ctl
 backup docs`, `carlos_docs_oncalendar`): a `--tag docs` snapshot of
-`data/OscarDocument`, so a scan or lab PDF uploaded mid-morning does not wait
+`data/CarlosDocument`, so a scan or lab PDF uploaded mid-morning does not wait
 for the 01:30 full to be protected. restic uploads only files added since the
 last run, so the cadence costs a directory scan plus the new files; the run
 is deliberately database-free, so documents keep shipping even while the db
@@ -2692,7 +2698,9 @@ your escrow, not the bundle: the bundle rides *inside* the repo they unlock.
 #        --host <instance>-emr --tag files --target /tmp/dr
 #    Copy /tmp/dr/backup/container/conf/* over $EMR_HOME/container/conf/
 #    (operator-owned conf, TLS certs, the encrypted secrets bundle) and
-#    /tmp/dr/backup/OscarDocument/* into $EMR_HOME/data/OscarDocument/.
+#    /tmp/dr/backup/CarlosDocument/* into $EMR_HOME/data/CarlosDocument/
+#    (a snapshot from before the directory rename lists
+#    /tmp/dr/backup/OscarDocument/* — same copy, same destination).
 # 2. Re-materialize secrets: place the escrowed age private key at
 #    $EMR_HOME/secrets-private/age-key.txt (root-only 0700 dir, 0600 file)
 #    and run `carlos-ctl seal` (re-seals to this host's TPM where available).
@@ -2724,7 +2732,7 @@ point-in-time-recovery path itself is exercised, not just the base dump), and
 sanity-checks the core tables (`carlos.provider` must be **non-empty**;
 `demographic` and `appointment` must be present). It also asserts the
 **document and config tiers**: the latest `docs` snapshot must be listable
-and non-empty (an unmounted/mis-pathed `OscarDocument` cannot pass — the
+and non-empty (an unmounted/mis-pathed `CarlosDocument` cannot pass — the
 15-minute docs run likewise refuses to stamp success on an empty store;
 `CARLOS_DOCS_MIN_FILES=0` is the explicit pre-go-live opt-out), and the
 `files` snapshot must contain the encrypted secrets bundle (the DR contract).

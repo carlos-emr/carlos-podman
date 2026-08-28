@@ -161,7 +161,7 @@ The following paths persist after `podman kube down`:
 - `$EMR_HOME/container/conf`: rendered application and database configuration;
 - `$EMR_HOME/data/mariadb-mnt`: the MariaDB data directory;
 - `$EMR_HOME/data/mariadb-binlog`: binary logs;
-- `$EMR_HOME/data/OscarDocument`: uploaded development documents; and
+- `$EMR_HOME/data/CarlosDocument`: uploaded development documents; and
 - `$EMR_HOME/logs`: application logs.
 
 `podman kube down` removes the pod but does not remove these host directories.

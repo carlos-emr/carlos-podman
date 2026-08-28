@@ -690,6 +690,21 @@ class Settings:
 
     # -- accessors ---------------------------------------------------------
 
+    @property
+    def document_store(self) -> Path:
+        """Host path of the patient document store. CarlosDocument replaced
+        the inherited OscarDocument default; until the playbook's one-time
+        rename has run on a host, fall back to the legacy directory so
+        backups, guards and drills keep protecting the data mid-transition
+        instead of watching an empty tree."""
+        new = self.data_dir / "CarlosDocument"
+        if new.is_dir():
+            return new
+        legacy = self.data_dir / "OscarDocument"
+        if legacy.is_dir():
+            return legacy
+        return new
+
     def get(self, key: str, default: str = "") -> str:
         if key in self._vals:
             return self._vals[key]

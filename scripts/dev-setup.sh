@@ -122,7 +122,7 @@ mkdir -p "$EMR_HOME/container/conf/tomcat" \
          "$EMR_HOME/container/guard" \
          "$EMR_HOME/data/mariadb-mnt" \
          "$EMR_HOME/data/mariadb-binlog" \
-         "$EMR_HOME/data/OscarDocument/oscar/document" \
+         "$EMR_HOME/data/CarlosDocument/carlos/document" \
          "$EMR_HOME/logs/carlos" \
          "$EMR_HOME/backup/mariadb-hot" \
          "$EMR_HOME/run/db-socket" \

@@ -523,7 +523,7 @@ class BackupContext:
                 "--env-file", str(self.env_file),
                 *self.repo_env,
                 "-v", f"{self.cache_dir}:/root/.cache/restic",
-                "-v", f"{self.s.data_dir}/OscarDocument:/backup/OscarDocument:ro",
+                "-v", f"{self.s.document_store}:/backup/CarlosDocument:ro",
                 "-v", f"{self.s.emr_home}/container:/backup/container:ro",
                 "-v", f"{self.binlog_dir}:/backup/binlog:ro",
                 *self.repo_mount,
@@ -685,14 +685,14 @@ class BackupContext:
 
     def docs_store_populated(self) -> bool:
         """Empty-source guard: restic happily snapshots an empty tree and
-        exits 0, so an unmounted/mis-pathed OscarDocument would stamp success
+        exits 0, so an unmounted/mis-pathed document store would stamp success
         forever while backing up nothing. Bounded count — cheap on huge
         stores. 0 disables (a genuinely fresh pre-go-live install)."""
         threshold = int(self.s.get("CARLOS_DOCS_MIN_FILES", "1") or "1")
         if threshold <= 0:
             return True
         count = 0
-        docs = self.s.data_dir / "OscarDocument"
+        docs = self.s.document_store
         if docs.is_dir():
             for p in docs.rglob("*"):
                 if p.is_file():
@@ -710,7 +710,7 @@ class BackupContext:
             (self.backup_dir / ".last-docs-ok").touch()
         else:
             warn(
-                f"document store {self.s.data_dir}/OscarDocument holds fewer than "
+                f"document store {self.s.document_store} holds fewer than "
                 f"{self.s.get('CARLOS_DOCS_MIN_FILES', '1')} file(s) — snapshot taken but "
                 f"success NOT stamped (unmounted/mis-pathed document dir? a pre-go-live "
                 f"install can set CARLOS_DOCS_MIN_FILES=0 in carlos-app.env)"
@@ -1002,7 +1002,7 @@ def cmd_backup(runner: Runner, args: List[str]) -> int:
             # Deliberately db-free — documents keep shipping even while the
             # db (or the whole pod) is down.
             log("Snapshotting the document store")
-            if ctx.run_restic(["backup", "/backup/OscarDocument",
+            if ctx.run_restic(["backup", "/backup/CarlosDocument",
                                "--tag", "docs"]).returncode != 0:
                 return 1
             # Stamp success only for a NON-EMPTY store; exit 0 either way — a
@@ -1279,7 +1279,7 @@ def _full_backup(ctx: BackupContext) -> bool:
     # superseded plaintext conf/restic, and rolling *.bak are excluded.
     log("Backing up documents and configuration")
     if ctx.run_restic([
-        "backup", "/backup/OscarDocument", "/backup/container", "--tag", "files",
+        "backup", "/backup/CarlosDocument", "/backup/container", "--tag", "files",
         "--exclude", "/backup/container/conf/restic",
         "--exclude", "/backup/container/carlos-app.env",
         "--exclude", "/backup/container/*.sh",
@@ -1395,7 +1395,7 @@ def _verify_docs_content(ctx: BackupContext) -> bool:
     different-bytes is corruption and FAILS the drill. Empty store: skip."""
     import hashlib
 
-    store = ctx.s.data_dir / "OscarDocument"
+    store = ctx.s.document_store
     oldest: Optional[Path] = None
     oldest_mtime = 0.0
     for p in store.rglob("*"):
@@ -1412,14 +1412,21 @@ def _verify_docs_content(ctx: BackupContext) -> bool:
     rel = oldest.relative_to(store)
     sentinel = ctx.backup_dir / f".verify-doc.{os.getpid()}"
     try:
-        fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            cp = ctx.run_restic(
-                ["dump", "latest", "--host", ctx.snapshot_host, "--tag", "docs",
-                 f"/backup/OscarDocument/{rel}"],
-                stdout=f,
-            )
-        if cp.returncode != 0:
+        # The newest docs snapshot right after the OscarDocument ->
+        # CarlosDocument rename still carries the old mount path, so try the
+        # canonical name first and fall back to the pre-rename one.
+        cp = None
+        for snap_root in ("/backup/CarlosDocument", "/backup/OscarDocument"):
+            fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                cp = ctx.run_restic(
+                    ["dump", "latest", "--host", ctx.snapshot_host, "--tag", "docs",
+                     f"{snap_root}/{rel}"],
+                    stdout=f,
+                )
+            if cp.returncode == 0:
+                break
+        if cp is None or cp.returncode != 0:
             warn(
                 f"restore drill FAILED — the docs snapshot cannot restore the store's "
                 f"oldest document ({rel}): the snapshot is missing content the live "
@@ -1464,7 +1471,7 @@ def _snapshot_listing_count(ctx: BackupContext, tag: str, needle: str) -> int:
             "--env-file", str(ctx.env_file),
             *ctx.repo_env,
             "-v", f"{ctx.cache_dir}:/root/.cache/restic",
-            "-v", f"{ctx.s.data_dir}/OscarDocument:/backup/OscarDocument:ro",
+            "-v", f"{ctx.s.document_store}:/backup/CarlosDocument:ro",
             "-v", f"{ctx.s.emr_home}/container:/backup/container:ro",
             "-v", f"{ctx.binlog_dir}:/backup/binlog:ro",
             *ctx.repo_mount,
@@ -1524,10 +1531,14 @@ def _verify_restore(ctx: BackupContext) -> bool:
     # Cheap listability gates FIRST (no throwaway DB needed): broken/empty
     # document and config backups must fail the drill, not just the db leg.
     docs_min = int(s.get("CARLOS_DOCS_MIN_FILES", "1") or "1")
-    if docs_min > 0 and _snapshot_listing_count(ctx, "docs", "/backup/OscarDocument/") == 0:
+    # Accept the pre-rename mount path too: right after the OscarDocument ->
+    # CarlosDocument rename the newest docs snapshot still lists old paths.
+    if docs_min > 0 \
+            and _snapshot_listing_count(ctx, "docs", "/backup/CarlosDocument/") == 0 \
+            and _snapshot_listing_count(ctx, "docs", "/backup/OscarDocument/") == 0:
         warn(
             "restore drill FAILED — no listable 'docs' snapshot, or it lists no document "
-            "entries (document backups never ran, or an unmounted/mis-pathed OscarDocument "
+            "entries (document backups never ran, or an unmounted/mis-pathed document store "
             "is being snapshotted empty; set CARLOS_DOCS_MIN_FILES=0 only for a "
             "pre-go-live install)"
         )

@@ -134,7 +134,7 @@ spec:
     # is pinned by a run-tests.sh assertion; keep it in both init containers.
     - name: carlos-init
       image: "{{ carlos_image }}"
-      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment - the secrets service failed to render (TPM/Secure-Boot change?); refusing to start on a broken credential' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/OscarDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
+      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment - the secrets service failed to render (TPM/Secure-Boot change?); refusing to start on a broken credential' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/CarlosDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
@@ -161,7 +161,7 @@ spec:
         - name: carlos-logs
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
-          mountPath: /var/lib/OscarDocument
+          mountPath: /var/lib/CarlosDocument
         # Fresh emptyDirs each start — chowned so the read-only-root carlos
         # container (uid 10001) can write JSP-compile output and temp files.
         - name: carlos-work
@@ -633,7 +633,7 @@ spec:
     # assemble the mode-0600 base properties + optional TPM-sealed fragment into
     # the `carlos-config` tmpfs emptyDir (chowned to 10001, read here via
     # -Dcarlos_override_properties), and chown the writable hostPath mounts
-    # (logs, OscarDocument) to 10001. This container then just starts Tomcat;
+    # (logs, CarlosDocument) to 10001. This container then just starts Tomcat;
     # tini is PID 1 (reaps orphans, forwards podman's SIGTERM for graceful stop).
     - name: carlos
       image: "{{ carlos_image }}"
@@ -761,6 +761,13 @@ spec:
         # csrf/waf log4j2 files — persisted so an OOM dump survives the restart.
         - name: carlos-logs
           mountPath: /usr/local/tomcat/logs
+        - name: carlos-documents
+          mountPath: /var/lib/CarlosDocument
+        # The SAME volume again at the pre-rename path: absolute paths the
+        # application stored in the database before the OscarDocument ->
+        # CarlosDocument rename (faxes.filename, emailAttachment.filePath)
+        # keep resolving. Two mount points of one hostPath, not a second
+        # volume — there is exactly one document store.
         - name: carlos-documents
           mountPath: /var/lib/OscarDocument
         # Writable Tomcat scratch — the root filesystem is read-only. work/
@@ -920,5 +927,5 @@ spec:
         type: DirectoryOrCreate
     - name: carlos-documents
       hostPath:
-        path: {{ carlos_emr_home }}/data/OscarDocument
+        path: {{ carlos_emr_home }}/data/CarlosDocument
         type: Directory

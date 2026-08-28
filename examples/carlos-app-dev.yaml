@@ -78,7 +78,7 @@ spec:
 
     - name: carlos-init
       image: "localhost/carlos-app:latest"
-      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/OscarDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
+      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/CarlosDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
@@ -101,7 +101,7 @@ spec:
         - name: carlos-logs
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
-          mountPath: /var/lib/OscarDocument
+          mountPath: /var/lib/CarlosDocument
         - name: carlos-work
           mountPath: /tomcat-work
         - name: carlos-temp
@@ -285,7 +285,7 @@ spec:
         - name: carlos-logs
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
-          mountPath: /var/lib/OscarDocument
+          mountPath: /var/lib/CarlosDocument
         - name: carlos-work
           mountPath: /usr/local/tomcat/work
         - name: carlos-temp
@@ -370,5 +370,5 @@ spec:
         type: DirectoryOrCreate
     - name: carlos-documents
       hostPath:
-        path: __EMR_HOME__/data/OscarDocument
+        path: __EMR_HOME__/data/CarlosDocument
         type: Directory
