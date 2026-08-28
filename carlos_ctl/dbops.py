@@ -486,11 +486,31 @@ def maybe_adopt_default_schema(runner: Runner) -> None:
         return
     if not schema_exists("oscar"):
         return  # fresh install, or already adopted
+
+    def _object_count(schema: str) -> str:
+        # schema is always a literal ("oscar") or the identifier-validated db.
+        return (root_sql(
+            "SELECT COUNT(*) FROM ("  # noqa: S608 — schema is identifier-validated / literal
+            "SELECT TABLE_NAME AS n FROM information_schema.TABLES "
+            f"WHERE TABLE_SCHEMA='{schema}' "
+            "UNION ALL SELECT ROUTINE_NAME FROM information_schema.ROUTINES "
+            f"WHERE ROUTINE_SCHEMA='{schema}' "
+            "UNION ALL SELECT EVENT_NAME FROM information_schema.EVENTS "
+            f"WHERE EVENT_SCHEMA='{schema}') o").stdout or "").strip()
+
+    # A leftover EMPTY `oscar` is the residue of a prior adoption that was
+    # killed between its RENAME TABLE and its DROP DATABASE: the data already
+    # lives in `{db}`. Drop the empty shell and return, rather than warn
+    # "both exist" on every subsequent play. Only when `oscar` is truly empty.
+    if schema_exists(db) and _object_count("oscar") == "0":
+        if root_sql("DROP DATABASE `oscar`", capture=False).returncode == 0:
+            log("dropped an empty leftover `oscar` schema (a prior adoption's "
+                "DROP DATABASE had not completed)")
+        else:
+            warn("could not drop the empty leftover `oscar` schema; drop it by hand")
+        return
     if schema_exists(db):
-        holds = (root_sql(
-            "SELECT COUNT(*) FROM information_schema.TABLES "  # noqa: S608 — db is identifier-validated by require_db_identifier
-            f"WHERE TABLE_SCHEMA='{db}'").stdout or "").strip()
-        if holds != "0":
+        if _object_count(db) != "0":
             # Never merge two schemas that both hold objects: on a PHI host
             # the only safe answer is a human decision.
             warn(f"both `oscar` and `{db}` exist and `{db}` is not empty — refusing to "

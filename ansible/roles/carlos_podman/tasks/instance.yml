@@ -206,6 +206,29 @@
     path: "{{ carlos_data_dir }}/CarlosDocument"
   register: _carlos_docs
 
+# Two REAL document stores is the one state that risks silently splitting
+# patient documents: the mv below would be skipped, the pod would mount
+# CarlosDocument only, and backups/guards (config.document_store) would
+# follow CarlosDocument too — stranding everything still under OscarDocument
+# from both the app and the backups, with no error. Fail loudly instead
+# (mirrors the deb's refuse-and-stop), so an operator consolidates by hand.
+# A CarlosDocument SYMLINK (the inner-segment compat link is at
+# CarlosDocument/oscar, not here) or the normal post-rename state does not
+# trip this — it needs two independent real directories.
+- name: Refuse to proceed when both document stores exist as real directories
+  ansible.builtin.fail:
+    msg: >-
+      Both {{ carlos_data_dir }}/OscarDocument and
+      {{ carlos_data_dir }}/CarlosDocument exist as real directories. Refusing
+      to pick or merge a patient-document store. Consolidate the two by hand
+      (the live data is in whichever this instance has been serving), remove
+      the stale one, then re-run the play.
+  when:
+    - _oscar_docs.stat.isdir | default(false)
+    - not (_oscar_docs.stat.islnk | default(false))
+    - _carlos_docs.stat.isdir | default(false)
+    - not (_carlos_docs.stat.islnk | default(false))
+
 - name: Rename OscarDocument -> CarlosDocument (one-time migration)
   ansible.builtin.command:
     cmd: mv "{{ carlos_data_dir }}/OscarDocument" "{{ carlos_data_dir }}/CarlosDocument"
