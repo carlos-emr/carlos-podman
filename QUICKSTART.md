@@ -639,7 +639,7 @@ boundary:
 
 ```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e \
-  'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+  'CREATE DATABASE IF NOT EXISTS `carlos` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 ```
 
 (If you customized `carlos_db_name` in host_vars, create that name instead —

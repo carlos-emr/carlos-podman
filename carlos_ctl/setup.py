@@ -331,8 +331,9 @@ def cmd_setup(runner: Runner) -> int:
      existing OpenO/OSCAR datadir? SKIP this). MariaDB publishes no TCP port,
      so pipe the Flyway migration SQL through 'carlos-ctl db'. From a
      github.com/carlos-emr/carlos checkout:
-       sudo EMR_HOME={emr_home} carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
-       (a customized carlos_db_name in host_vars replaces `carlos` here —
+       sudo EMR_HOME={emr_home} carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS `carlos` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+       (a customized carlos_db_name in host_vars replaces `carlos` inside the
+       backticks here — the backticks keep an all-digit name valid SQL, and
        db-migrate targets the configured name)
        ...then apply database/mysql/migration/ files in version order (common +
        province interleaved), starting with common/V1__baseline_schema.sql —
