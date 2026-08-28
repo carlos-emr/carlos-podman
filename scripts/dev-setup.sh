@@ -161,6 +161,7 @@ enc_key = os.environ["CARLOS_DEV_ENC_KEY"]
 db_pw_props = db_pw.replace("\\", "\\\\")
 values = {
     "jdbc_zero_date": "round",
+    "db_name": "carlos",
     "db_root_password": db_pw_props,
     "encryption_secret_key": enc_key,
     "rx_allergy_checking": "no",

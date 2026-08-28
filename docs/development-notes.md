@@ -150,7 +150,7 @@ podman logs --tail 200 carlos-app-carlos
 podman inspect carlos-app-carlos --format '{{json .State.Health}}'
 ```
 
-A new instance waits for the `oscar` schema before starting Tomcat. Load the
+A new instance waits for the `carlos` schema before starting Tomcat. Load the
 schema as described in the quick start before treating a `starting` health
 state as a fault.
 

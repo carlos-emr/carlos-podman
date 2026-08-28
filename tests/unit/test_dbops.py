@@ -22,7 +22,7 @@ def _write_properties(runner, db_username: str) -> None:
 
 class TestSchemaFingerprint:
     """The rollback guard's compatibility signature: deterministic hash of
-    the oscar column inventory; '' = cannot-fingerprint (never a match)."""
+    the EMR-schema column inventory; '' = cannot-fingerprint (never a match)."""
 
     def test_same_inventory_hashes_identically(self, mk_runner) -> None:
         r1, r2 = mk_runner(), mk_runner()
@@ -383,7 +383,7 @@ class TestDbMigrate:
         execs = [c for c in r.calls if "exec" in c and "mariadb" in c]
         assert len(execs) == 1
         assert f"--init-command={dbops.MIGRATION_SESSION_PIN}" in execs[0]
-        assert execs[0][-1] == "oscar"
+        assert execs[0][-1] == "carlos"
 
     def test_applies_files_in_argv_order(self, mk_runner, tmp_path) -> None:
         r = self._runner(mk_runner)

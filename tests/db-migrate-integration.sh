@@ -92,13 +92,13 @@ done
 podman exec -e MYSQL_PWD="$DB_PW" "$CTR" mariadb -uroot -e 'SELECT 1' >/dev/null \
     || { echo "MariaDB never became ready"; exit 1; }
 
-# Schema fixture: the oscar database in the deployment's collation, the
+# Schema fixture: the carlos database in the deployment's collation, the
 # diagnosticcode source table V1.0.7 backfills from, and a pre-existing
 # legacy dxphcpgroup mapping so the legacy-expansion join (the statement
 # that raises 1267) has real rows to work on. V1.0.7's DDL is
 # IF-NOT-EXISTS, so pre-creating the table matches an adopted-legacy DB.
-ctl db -e "CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
-ctl db oscar <<'SQL'
+ctl db -e "CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
+ctl db carlos <<'SQL'
 CREATE TABLE diagnosticcode (
   diagnostic_code varchar(10) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
@@ -111,7 +111,7 @@ CREATE TABLE dxphcpgroup (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 INSERT INTO dxphcpgroup VALUES ('320','01 Legacy chapter','Legacy group');
 SQL
-ok "oscar schema fixture created (diagnosticcode + legacy dxphcpgroup row)"
+ok "carlos schema fixture created (diagnosticcode + legacy dxphcpgroup row)"
 
 echo "== fetching the migrations under test"
 MIG="$WORK/migrations"; mkdir -p "$MIG"
@@ -167,7 +167,7 @@ if [[ "$UTF8MB4_COLL" == *general_ci* ]]; then
     echo "      the 1267 repro is not applicable here; testing the pinned path only."
 else
     set +e
-    REPRO_OUT=$(ctl db --default-character-set=utf8mb4 oscar < "$MIG/$V7" 2>&1)
+    REPRO_OUT=$(ctl db --default-character-set=utf8mb4 carlos < "$MIG/$V7" 2>&1)
     REPRO_RC=$?
     set -e
     if [ "$REPRO_RC" -ne 0 ] && grep -q "1267" <<<"$REPRO_OUT"; then
@@ -184,13 +184,13 @@ else
     bad "db-migrate failed on the pinned session"
 fi
 
-ROWS=$(ctl db -N -B oscar -e 'SELECT COUNT(*) FROM dxphcpgroup' | tail -1)
+ROWS=$(ctl db -N -B carlos -e 'SELECT COUNT(*) FROM dxphcpgroup' | tail -1)
 if [ "${ROWS:-0}" -gt 1 ]; then
     ok "PHCP diagnosis-group rows are populated (dxphcpgroup: $ROWS rows)"
 else
     bad "dxphcpgroup not populated (rows: ${ROWS:-unreadable})"
 fi
-EXPANDED=$(ctl db -N -B oscar -e "SELECT COUNT(*) FROM dxphcpgroup WHERE dxcode='0320'" | tail -1)
+EXPANDED=$(ctl db -N -B carlos -e "SELECT COUNT(*) FROM dxphcpgroup WHERE dxcode='0320'" | tail -1)
 if [ "${EXPANDED:-0}" -eq 1 ]; then
     ok "legacy mapping expanded to the zero-padded spelling (0320)"
 else
@@ -199,7 +199,7 @@ fi
 
 # -- 3. RERUNNABILITY: a second pass is a guarded no-op --------------------
 if ctl db-migrate "$MIG/$V7" "$MIG/$V13"; then
-    ROWS2=$(ctl db -N -B oscar -e 'SELECT COUNT(*) FROM dxphcpgroup' | tail -1)
+    ROWS2=$(ctl db -N -B carlos -e 'SELECT COUNT(*) FROM dxphcpgroup' | tail -1)
     if [ "$ROWS2" = "$ROWS" ]; then
         ok "second db-migrate pass is a no-op (still $ROWS rows)"
     else

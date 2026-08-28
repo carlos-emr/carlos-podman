@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import List, Tuple
 
+from .config import Settings
 from .runner import Runner
 from .util import (
     CtlError,
@@ -32,6 +33,18 @@ from .util import (
     sql_escape,
     warn,
 )
+
+
+def require_db_identifier(s: Settings) -> str:
+    """The configured EMR schema name, validated as a plain identifier.
+    It is interpolated into backtick-quoted DDL run as database root
+    (grants, the adoption rename), so anything else is refused outright —
+    the blast radius of a stray backtick here is a DROP on a PHI host."""
+    db = s.get("CARLOS_DB_NAME") or "carlos"
+    if not re.fullmatch(r"[A-Za-z0-9_]+", db):
+        raise CtlError(f"CARLOS_DB_NAME ('{db}') must be a plain identifier (A-Za-z0-9_)")
+    return db
+
 
 _PROVISION_SQL = """\
 -- Account DDL must NOT ride the binary log. The dump/replay legs deliberately
@@ -47,8 +60,8 @@ CREATE USER IF NOT EXISTS 'carlos'@'localhost' IDENTIFIED BY '{app}';
 CREATE USER IF NOT EXISTS 'carlos'@'127.0.0.1' IDENTIFIED BY '{app}';
 ALTER USER 'carlos'@'localhost' IDENTIFIED BY '{app}';
 ALTER USER 'carlos'@'127.0.0.1' IDENTIFIED BY '{app}';
-GRANT ALL PRIVILEGES ON `oscar`.* TO 'carlos'@'localhost';
-GRANT ALL PRIVILEGES ON `oscar`.* TO 'carlos'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON `{db}`.* TO 'carlos'@'localhost';
+GRANT ALL PRIVILEGES ON `{db}`.* TO 'carlos'@'127.0.0.1';
 CREATE USER IF NOT EXISTS 'drugref'@'localhost' IDENTIFIED BY '{drugref}';
 CREATE USER IF NOT EXISTS 'drugref'@'127.0.0.1' IDENTIFIED BY '{drugref}';
 ALTER USER 'drugref'@'localhost' IDENTIFIED BY '{drugref}';
@@ -158,6 +171,7 @@ def provision_db_accounts(runner: Runner) -> bool:
     sql = _PROVISION_SQL.format(
         app=sql_escape(pws["app"]), drugref=sql_escape(pws["drugref"]),
         backup=sql_escape(pws["backup"]), exporter=sql_escape(pws["exporter"]),
+        db=require_db_identifier(s),
     )
     # Abort before any store is touched on SQL failure: a failed step must not
     # fall through to the credential-file rewrites and install passwords
@@ -286,7 +300,7 @@ def provision_db_accounts(runner: Runner) -> bool:
 
 _SCHEMA_FP_SQL = (
     "SELECT table_name, column_name, ordinal_position, column_type "
-    "FROM information_schema.columns WHERE table_schema='oscar' "
+    "FROM information_schema.columns WHERE table_schema='{db}' "
     "ORDER BY table_name, column_name, ordinal_position"
 )
 
@@ -326,7 +340,8 @@ def schema_fingerprint(runner: Runner) -> str:
         # engine audit) — only the password is off-argv.
         cp = runner.podman_user(
             ["exec", "-i", "-e", "MYSQL_PWD", f"{s.app_pod}-db",
-             "mariadb", f"-u{user}", "-N", "-B", "-e", _SCHEMA_FP_SQL],
+             "mariadb", f"-u{user}", "-N", "-B", "-e",
+             _SCHEMA_FP_SQL.format(db=require_db_identifier(s))],
             env={"MYSQL_PWD": pw}, quiet=True, capture=True,
         )
         out = (cp.stdout or "").strip()
@@ -422,6 +437,112 @@ def wait_db_accepting(
         if time.time() >= deadline:
             return False, last_err
         time.sleep(2)
+
+
+def maybe_adopt_default_schema(runner: Runner) -> None:
+    """One-time `oscar` -> CARLOS_DB_NAME schema adoption, run by play once
+    the pod is up. The default schema name changed from the inherited
+    `oscar` to `carlos`; an install whose data still lives in `oscar` is on
+    the old DEFAULT, not an operator choice, so play moves it — an operator
+    who sets CARLOS_DB_NAME=oscar never enters this path, and once `oscar`
+    is gone the function is a no-op forever. All guards fail SOFT (warn and
+    return): the next play retries, and a not-yet-adopted install keeps
+    running against `oscar` only until the rename lands — but note the
+    re-rendered carlos.properties already names the NEW schema, so a
+    deferred adoption means the app is down until a play completes it.
+
+    The rename is a single multi-pair RENAME TABLE: atomic, and it carries
+    every table (data and any flyway bookkeeping) unchanged. Deliberately
+    binlogged — unlike account DDL, the rename must replay during a
+    point-in-time restore or the restored server diverges from the live
+    one. Only the app-account GRANTs on the new name ride outside the
+    binlog, same as all other account DDL here."""
+    s = runner.settings
+    db = require_db_identifier(s)
+    if db == "oscar":
+        return
+    root_pw = s.get("CARLOS_DB_ROOT_PASSWORD")
+    if not root_pw:
+        # Nothing to probe with; a root-less steady state is handled (and
+        # warned about) by the provisioning path.
+        return
+
+    def root_sql(sql: str, *, capture: bool = True) -> subprocess.CompletedProcess:
+        return runner.podman_user(
+            ["exec", "-i", "-e", "MYSQL_PWD", f"{s.app_pod}-db",
+             "mariadb", "-uroot", "-N", "-B", "-e", sql],
+            env={"MYSQL_PWD": root_pw}, capture=capture, quiet=True,
+        )
+
+    def schema_exists(name: str) -> bool:
+        return bool((root_sql(f"SHOW DATABASES LIKE '{name}'").stdout or "").strip())
+
+    ready, _probe_err = wait_db_accepting(
+        runner, root_pw, s.get_int_or("READY_WAIT_SECONDS", 1320),
+    )
+    if not ready:
+        warn(f"db not ready — cannot check whether the `oscar` schema needs adopting "
+             f"as `{db}`; the next 'carlos-ctl play' retries")
+        return
+    if not schema_exists("oscar"):
+        return  # fresh install, or already adopted
+    if schema_exists(db):
+        holds = (root_sql(
+            "SELECT COUNT(*) FROM information_schema.TABLES "  # noqa: S608 — db is identifier-validated by require_db_identifier
+            f"WHERE TABLE_SCHEMA='{db}'").stdout or "").strip()
+        if holds != "0":
+            # Never merge two schemas that both hold objects: on a PHI host
+            # the only safe answer is a human decision.
+            warn(f"both `oscar` and `{db}` exist and `{db}` is not empty — refusing to "
+                 f"merge; move or drop one by hand, then re-run 'carlos-ctl play'")
+            return
+    tables = [t for t in (root_sql(
+        "SELECT TABLE_NAME FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA='oscar' AND TABLE_TYPE='BASE TABLE' "
+        "ORDER BY TABLE_NAME").stdout or "").splitlines() if t]
+    log(f"Adopting the `oscar` schema as `{db}` "
+        f"(one-time default rename; {len(tables)} tables)")
+    stmts = [f"CREATE DATABASE IF NOT EXISTS `{db}` "
+             "CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"]
+    if tables:
+        pairs = ", ".join(f"`oscar`.`{t}` TO `{db}`.`{t}`" for t in tables)
+        stmts.append(f"RENAME TABLE {pairs};")
+    cp = runner.podman_user(
+        ["exec", "-i", "-e", "MYSQL_PWD", f"{s.app_pod}-db", "mariadb", "-uroot"],
+        input_text="\n".join(stmts), env={"MYSQL_PWD": root_pw}, quiet=True,
+    )
+    if cp.returncode != 0:
+        warn(f"schema adoption `oscar` -> `{db}` failed mid-flight — both schemas are "
+             f"intact (RENAME TABLE is atomic); inspect with 'carlos-ctl db' and re-run "
+             f"'carlos-ctl play'")
+        return
+    # The app account's grants were scoped to `oscar`.*; re-scope them so an
+    # already-provisioned install keeps working without a rotation. Account
+    # DDL stays out of the binlog (same contract as _PROVISION_SQL). GRANT
+    # does not create accounts under the default NO_AUTO_CREATE_USER mode, so
+    # on a never-provisioned (root-configured) install this fails harmlessly
+    # and the provisioning that follows in the same play grants on `{db}`.
+    grant = ("SET SESSION sql_log_bin = 0;\n"
+             f"GRANT ALL PRIVILEGES ON `{db}`.* TO 'carlos'@'localhost';\n"
+             f"GRANT ALL PRIVILEGES ON `{db}`.* TO 'carlos'@'127.0.0.1';\n")
+    gp = runner.podman_user(
+        ["exec", "-i", "-e", "MYSQL_PWD", f"{s.app_pod}-db", "mariadb", "-uroot"],
+        input_text=grant, env={"MYSQL_PWD": root_pw}, quiet=True,
+    )
+    if gp.returncode != 0:
+        warn(f"could not re-grant the app account on `{db}` (accounts not provisioned "
+             f"yet?) — 'carlos-ctl db-users' converges the grants")
+    leftover = (root_sql(
+        "SELECT TABLE_NAME FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA='oscar'").stdout or "").strip()
+    if leftover:
+        # Views or tables created mid-run stay the operator's call; dropping
+        # the schema would silently take them along.
+        warn("the emptied `oscar` schema still holds objects — leaving it in place")
+    elif root_sql("DROP DATABASE `oscar`", capture=False).returncode != 0:
+        warn("could not drop the emptied `oscar` schema; drop it by hand")
+    else:
+        log(f"schema adoption complete: `oscar` moved to `{db}`")
 
 
 def maybe_provision_db_users(runner: Runner) -> bool:
@@ -602,7 +723,7 @@ def cmd_db_migrate(runner: Runner, args: List[str]) -> int:
     ... IF NOT EXISTS DDL and existence-guarded backfills)."""
     usage = "usage: carlos-ctl db-migrate [--db <database>] <file.sql> [more.sql ...]"
     s = runner.settings
-    db = "oscar"
+    db = require_db_identifier(s)
     files = list(args)
     if files[:1] == ["--db"]:
         if len(files) < 2:
@@ -665,7 +786,7 @@ def cmd_db_dump(runner: Runner, args: List[str]) -> int:
     if sys.stdout.isatty():
         raise CtlError(
             "refusing to write a dump to the terminal — redirect it: "
-            "carlos-ctl db-dump > oscar-$(date +%F).sql"
+            "carlos-ctl db-dump > carlos-$(date +%F).sql"
         )
     # A password prompt cannot work on a piped stream, and podman -t would
     # CRLF-mangle the dump, so this path needs the non-interactive credential.
@@ -676,7 +797,7 @@ def cmd_db_dump(runner: Runner, args: List[str]) -> int:
             f"cannot prompt for the password)"
         )
     warn("the dump is PLAINTEXT PHI — write it to an encrypted volume and delete it after use")
-    dbs = args or ["oscar"]
+    dbs = args or [require_db_identifier(s)]
     # --hex-blob matches the nightly tier: BLOB/BINARY columns (encrypted
     # casemgmt notes, eform attachments) are emitted as hex literals, immune
     # to charset/binary mangling between dump and reload.

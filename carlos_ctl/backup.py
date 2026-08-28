@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import IO, List, Optional, Tuple
 
-from . import pitr
+from . import dbops, pitr
 from .config import Settings, parse_env_file
 from .runner import Runner
 from .util import (
@@ -1829,25 +1829,39 @@ def _verify_restore(ctx: BackupContext) -> bool:
         # has providers) so an empty-but-present table can't pass as a good
         # restore. The others are presence-only: a fresh-ish install may
         # legitimately have no drugs/prescriptions/notes/documents yet.
+        # The schema name comes from the DUMP, not the live config: right
+        # after the oscar -> carlos default rename the newest dump still
+        # carries the old name, so fall back to `oscar` when the configured
+        # schema is absent from the restored server.
+        drill_db = dbops.require_db_identifier(s)
+        cp = vexec(
+            ["mariadb", "--user=root", "-N", "-e",
+             f"SHOW DATABASES LIKE '{drill_db}'"],
+            capture=True,
+        )
+        if not (cp.stdout or "").strip() and drill_db != "oscar":
+            log(f"  restored dump has no `{drill_db}` schema — checking the pre-rename "
+                f"`oscar` name")
+            drill_db = "oscar"
         for table in ("provider", "demographic", "appointment", "security", "drugs",
                       "prescription", "casemgmt_note", "document"):
             cp = vexec(
                 ["mariadb", "--user=root", "-N", "-e",
-                 f"SELECT COUNT(*) FROM oscar.{table}"],  # noqa: S608 — table from the literal tuple above
+                 f"SELECT COUNT(*) FROM {drill_db}.{table}"],  # noqa: S608 — table from the literal tuple above, schema identifier-validated
                 capture=True,
             )
             count = (cp.stdout or "").strip()
             if not count.isdigit():
                 warn(
-                    f"restore drill FAILED — sanity query on oscar.{table} returned no row "
+                    f"restore drill FAILED — sanity query on {drill_db}.{table} returned no row "
                     f"count (dump truncated or missing tables?)"
                 )
                 return False
             if table == "provider" and int(count) == 0:
-                warn("restore drill FAILED — oscar.provider is EMPTY in the restored dump "
+                warn(f"restore drill FAILED — {drill_db}.provider is EMPTY in the restored dump "
                      "(a valid CARLOS DB always has providers)")
                 return False
-            log(f"  oscar.{table} rows in the restored dump: {count}")
+            log(f"  {drill_db}.{table} rows in the restored dump: {count}")
         log("Restore drill OK — docs/files snapshots listable, dump loaded, binlogs "
             "replayed, core tables present")
         return True

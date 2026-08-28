@@ -637,14 +637,14 @@ spec:
     # tini is PID 1 (reaps orphans, forwards podman's SIGTERM for graceful stop).
     - name: carlos
       image: "{{ carlos_image }}"
-      # Wait up to 600 seconds for the oscar database before starting Tomcat.
+      # Wait up to 600 seconds for the EMR database before starting Tomcat.
       # The schema is loaded after the first play on a new installation, and
       # Podman does not provide container startup ordering within the pod.
       # Credentials come from the assembled properties file; MYSQL_PWD keeps
       # the password out of command arguments. Decode Java-properties
       # backslash escaping before connecting. After the bounded wait, start
       # Tomcat so the liveness probe can report an unavailable database.
-      command: ["/usr/bin/tini", "--", "bash", "-c", "P=/run/carlos-config/carlos.properties; u=$(grep -m1 '^db_username=' \"$P\" | cut -d= -f2-); export MYSQL_PWD=\"$(grep '^db_password=' \"$P\" | tail -1 | cut -d= -f2- | sed 's/\\\\\\\\/\\\\/g')\"; ok=0; for i in $(seq 1 120); do mariadb -u\"${u:-root}\" -h 127.0.0.1 oscar -e 'SELECT 1' >/dev/null 2>&1 && { ok=1; break; }; sleep 5; done; unset MYSQL_PWD; [ \"$ok\" = 1 ] || echo 'WARN: oscar DB not queryable after 600s — starting Tomcat anyway (liveness will catch a dead DB)' >&2; exec catalina.sh run"]
+      command: ["/usr/bin/tini", "--", "bash", "-c", "P=/run/carlos-config/carlos.properties; u=$(grep -m1 '^db_username=' \"$P\" | cut -d= -f2-); export MYSQL_PWD=\"$(grep '^db_password=' \"$P\" | tail -1 | cut -d= -f2- | sed 's/\\\\\\\\/\\\\/g')\"; ok=0; for i in $(seq 1 120); do mariadb -u\"${u:-root}\" -h 127.0.0.1 {{ carlos_db_name }} -e 'SELECT 1' >/dev/null 2>&1 && { ok=1; break; }; sleep 5; done; unset MYSQL_PWD; [ \"$ok\" = 1 ] || echo 'WARN: {{ carlos_db_name }} DB not queryable after 600s — starting Tomcat anyway (liveness will catch a dead DB)' >&2; exec catalina.sh run"]
       # Fully non-root: runAsNonRoot + drop ALL capabilities with no add-backs
       # (the root-only work moved to carlos-init). runAsUser must match the image
       # USER (10001) for the runAsNonRoot admission check.

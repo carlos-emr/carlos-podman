@@ -168,8 +168,8 @@ case "$1 $2" in
           # Real --all-databases shape: the `-- Current Database:` comment
           # precedes CREATE DATABASE — the restore's drop-and-recreate
           # injection keys off it, making the injected DROP e2e-observable.
-          printf -- '-- Current Database: `oscar`\n'
-          printf 'CREATE DATABASE IF NOT EXISTS oscar;\n'
+          printf -- '-- Current Database: `carlos`\n'
+          printf 'CREATE DATABASE IF NOT EXISTS carlos;\n'
           printf -- '-- Dump completed on test\n'
       elif [[ "$*" == *" ls latest"* ]]; then
           if [[ -z "${STUB_LS_EMPTY:-}" ]]; then
@@ -282,7 +282,7 @@ case "$1 $2" in
           [[ -n "${STUB_UUID_PROBE_FAIL:-}" ]] && exit 1
           echo "${STUB_SERVER_UUID:-11111111-1111-1111-1111-111111111111}"
       fi
-      # Rollback's schema-compatibility fingerprint (oscar column inventory).
+      # Rollback's schema-compatibility fingerprint (EMR-schema column inventory).
       # STUB_SCHEMA_FP overrides the inventory (models a hand-applied
       # migration); STUB_SCHEMA_PROBE_FAIL models an unreachable db.
       if [[ "$*" == *"information_schema.columns"* ]]; then
@@ -295,11 +295,11 @@ case "$1 $2" in
           # (the fail-closed-vs-swallow test); STUB_NONINNODB: it reports a
           # MyISAM table.
           [[ -n "${STUB_ENGINE_PROBE_FAIL:-}" ]] && exit 1
-          [[ -n "${STUB_NONINNODB:-}" ]] && echo "oscar.legacy [MyISAM]"
+          [[ -n "${STUB_NONINNODB:-}" ]] && echo "carlos.legacy [MyISAM]"
           # STUB_ROURKE_ARIA: the KNOWN-unconvertible upstream table (1227
           # columns, over InnoDB's 1017 limit). Set alongside STUB_NONINNODB
           # to drive the MIXED case, which must still refuse.
-          [[ -n "${STUB_ROURKE_ARIA:-}" ]] && echo "oscar.formRourke2009 [Aria]"
+          [[ -n "${STUB_ROURKE_ARIA:-}" ]] && echo "carlos.formRourke2009 [Aria]"
       fi
       # A fake-but-complete dump so full-mode tests pass the staged-dump
       # footer AND content-floor verification and reach the retention/check

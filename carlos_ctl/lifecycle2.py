@@ -1008,6 +1008,9 @@ def cmd_play(runner: Runner, args: List[str]) -> int:
     # failure so an internet-facing app never silently steady-states as DB root.
     from . import dbops
 
+    # One-time oscar -> CARLOS_DB_NAME schema adoption (the default rename)
+    # runs BEFORE provisioning so the grants land on the adopted name.
+    dbops.maybe_adopt_default_schema(runner)
     db_least_priv_ok = dbops.maybe_provision_db_users(runner)
     # Confirm the app is actually SERVING before any go-live bookkeeping.
     # `systemctl restart` returns 0 once systemd STARTED the units, not once

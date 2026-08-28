@@ -338,7 +338,7 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl check
 > **Fresh install — expect this first `play` to exit nonzero.** It starts
 > the pods (which is what steps 7–8 need: the db must be running to load SQL
 > into), then gates go-live on the app AND DrugRef actually serving. On a
-> machine with no `oscar` and no `drugref2` database yet, neither can:
+> machine with no `carlos` and no `drugref2` database yet, neither can:
 > CARLOS waits out its wait-for-db and deploys against a missing schema, and
 > DrugRef's `/drugref2` context cannot start at all. So `play` reports "the
 > app is not serving", writes no go-live markers and arms no timers —
@@ -914,9 +914,16 @@ fail fast on a version mismatch. Coming from an OpenO build, review the
 migration READMEs for the adoption/baseline step before pointing the app at
 an existing datadir. For a fresh install, load the schema **after
 `carlos-ctl play`** (the db must be running) and **before first login**.
-(The database itself is named `oscar`, kept as-is for upstream
-compatibility — that name appears only in the SQL and the `carlos-ctl db
-oscar` target, never in user-facing text.) MariaDB publishes no TCP port in
+(The database is named `carlos`; the inherited `oscar` default has been
+renamed. An existing install whose data still lives in `oscar` is adopted
+automatically by the next `carlos-ctl play`, which renames the schema in
+place — atomic `RENAME TABLE`, deliberately binlogged so a point-in-time
+restore replays it — and re-grants the app account. Set
+`carlos_db_name: oscar` in host_vars to keep the old name; an explicit
+value is never migrated. Note for point-in-time restores: a window that
+straddles the adoption lands the tables under `carlos`, and a dump taken
+before it restores under `oscar` — the restore drill checks both
+spellings.) MariaDB publishes no TCP port in
 this deployment (the WAF/DB isolation boundary), so apply the files with
 `carlos-ctl db-migrate` in version order, common and province interleaved —
 from a `github.com/carlos-emr/carlos` checkout **at the release the
@@ -1148,7 +1155,7 @@ uid 999.
 Blast-radius containment: after `play` (or `carlos-ctl
 db-users`) the app connects to MariaDB as **`carlos`**, DrugRef as
 **`drugref`**, each with privileges scoped to **its own schema only**
-(`GRANT ALL ON oscar.*` / `drugref2.*`) — not root and not `*.*`. The metrics
+(`GRANT ALL ON carlos.*` / `drugref2.*`) — not root and not `*.*`. The metrics
 exporter (`exporter`) and backup (`backup`) accounts are likewise
 least-privilege. So an app-layer SQL injection or RCE cannot reach other
 schemas, `GRANT`, or `FILE`; root is reserved for admin/migration. (The
@@ -1310,7 +1317,7 @@ same source and layout the upstream devcontainer uses
   `carlos.properties`.
 
 **Database (one-time):** DrugRef expects a `drugref2` database next to
-`oscar` — the devcontainer seeds it from upstream's
+`carlos` — the devcontainer seeds it from upstream's
 `database/mysql/development-drugref.sql` plus the patch in
 `database/mysql/drugref/`. An OpenO-era datadir won't have it. With the pod
 running and the two SQL files from a CARLOS checkout at hand:
@@ -1325,7 +1332,7 @@ sudo carlos-ctl db-migrate --db drugref2 \
     database/mysql/drugref/2026-04-19-drugref-tc-atc-f.sql
 ```
 
-(`db-migrate --db <database>` targets a database other than `oscar` — same
+(`db-migrate --db <database>` targets a database other than the EMR schema (`carlos` by default) — same
 collation-pinned per-file sessions and fail-fast contract as the schema
 migrations; a raw `carlos-ctl db drugref2 < file.sql` works too but runs
 unpinned.)
@@ -1351,7 +1358,7 @@ sudo carlos-ctl db -N -B -e "SELECT CONCAT('ALTER TABLE \`drugref2\`.\`',table_n
 sudo carlos-ctl backup full     # now succeeds
 ```
 
-(`oscar.formRourke2009` stays Aria — it has more columns than InnoDB's 1017
+(`carlos.formRourke2009` stays Aria — it has more columns than InnoDB's 1017
 limit, and the audit recognizes it as a known, accepted exception.)
 
 That dataset is the one upstream develops against; refresh or replace it
@@ -1651,16 +1658,16 @@ from the host is a single command. Four paths, by use case:
 sudo carlos-ctl db
 
 # One-liner query
-sudo carlos-ctl db -e 'SELECT COUNT(*) FROM provider' oscar
+sudo carlos-ctl db -e 'SELECT COUNT(*) FROM provider' carlos
 
 # Export — a consistent dump (safe on the running db); ALWAYS redirect it
-sudo carlos-ctl db-dump > /root/oscar-$(date +%F).sql        # dumps `oscar`
+sudo carlos-ctl db-dump > /root/carlos-$(date +%F).sql        # dumps `carlos`
 sudo carlos-ctl db-dump drugref2 > /root/drugref2.sql        # any database
 
 # Import a dump / run a SQL file — stdin streams straight into the client,
 # so compressed dumps import without an intermediate file
 sudo carlos-ctl db oscar < oscar-2026-07-04.sql
-zcat oscar-2026-07-04.sql.gz | sudo carlos-ctl db oscar
+zcat carlos-2026-07-04.sql.gz | sudo carlos-ctl db carlos
 
 # Create a database
 sudo carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS drugref2'
@@ -1671,7 +1678,7 @@ sudo carlos-ctl db-backup pre-migration-$(date +%F)
 
 # Host-installed mariadb client (or a GUI over an SSH tunnel that supports
 # sockets) — connects as <user>@localhost via the unix socket:
-mariadb -S /usr/local/emr/run/db-socket/mysqld.sock -uroot -p oscar
+mariadb -S /usr/local/emr/run/db-socket/mysqld.sock -uroot -p carlos
 ```
 
 **Password:** with `CARLOS_DB_ROOT_PASSWORD` present in
@@ -1727,7 +1734,7 @@ For quick, non-GUI work, prefer the CLI — see
 [Database admin from the host](#database-admin-from-the-host):
 
 ```bash
-sudo carlos-ctl db        # or raw: runuser -u carlos -- podman exec -it carlos-app-db mariadb -uroot -p oscar
+sudo carlos-ctl db        # or raw: runuser -u carlos -- podman exec -it carlos-app-db mariadb -uroot -p carlos
 ```
 
 On a PHI system this is **break-glass tooling**: whatever MariaDB account you
@@ -1802,7 +1809,7 @@ first deploy; run explicitly with:
 sudo carlos-ctl db-users && sudo carlos-ctl play
 ```
 
-This creates `carlos` (ALL on `oscar.*`), `drugref` (ALL on `drugref2.*`),
+This creates `carlos` (ALL on `carlos.*`), `drugref` (ALL on `drugref2.*`),
 `backup` (global read/dump/binlog privileges only), and `exporter` (metrics —
 `PROCESS`/`REPLICATION CLIENT` + `SELECT` on `performance_schema` only;
 provisioned only when the obs profile is on — re-run `db-users` after
@@ -2000,7 +2007,7 @@ allowed — silent corruption instead of errors. A ready-to-enable STRICT
 block sits in the file (`STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,
 NO_ENGINE_SUBSTITUTION` + `innodb_strict_mode = 1`); uncomment both lines
 and restart the db pod after validating your workload. Related caveat: the
-server is utf8mb4 end-to-end, but oscar-schema columns are frequently
+server is utf8mb4 end-to-end, but EMR-schema columns are frequently
 utf8mb3 — a 4-byte codepoint (emoji, astral-plane CJK in a real name)
 inserted into a utf8mb3 column TRUNCATES the string at that character under
 the permissive mode; STRICT turns that into an error you can see. Column
@@ -2400,7 +2407,7 @@ order of importance:
    The upstream ON/BC schema ships it as `ENGINE=Aria`
    (`migration/on/V1.0.1__on_schema.sql`), and it *cannot* be converted: it
    has **1227 columns**, over InnoDB's hard limit of 1017, so
-   `ALTER TABLE oscar.formRourke2009 ENGINE=InnoDB` fails with
+   `ALTER TABLE carlos.formRourke2009 ENGINE=InnoDB` fails with
    `ERROR 1005 (errno: 185 "Too many columns")` under every `ROW_FORMAT`
    (DYNAMIC/COMPRESSED/COMPACT/REDUNDANT), and `innodb_page_size` is already
    at its 32 KiB maximum. Aria is a deliberate
@@ -2618,7 +2625,7 @@ the real run refuses unless you either type the literal `RESTORE <instance>`
 at the prompt or set `CARLOS_RESTORE_CONFIRMED=<instance>` (the instance
 name, e.g. `carlos` — the legacy `=1` still works one release with a
 deprecation warning). It **drops and re-creates every schema carried by the
-dump** (`oscar`/`drugref2` on a stock install; the `mysql`/`sys` system
+dump** (`carlos`/`drugref2` on a stock install; the `mysql`/`sys` system
 schemas and user databases absent from the dump are preserved) so the binlog
 replay applies onto exactly the dump state, runs the load and replay with
 `sql_log_bin=0` (a failed restore can simply be re-run — nothing is
@@ -2714,7 +2721,7 @@ restores this instance's latest dump (`--host <instance>-emr`) into a
 **throwaway** MariaDB (tmpfs datadir, no host mounts, never published),
 **replays the shipped binlogs from the dump's recorded anchor** (so the
 point-in-time-recovery path itself is exercised, not just the base dump), and
-sanity-checks the core tables (`oscar.provider` must be **non-empty**;
+sanity-checks the core tables (`carlos.provider` must be **non-empty**;
 `demographic` and `appointment` must be present). It also asserts the
 **document and config tiers**: the latest `docs` snapshot must be listable
 and non-empty (an unmounted/mis-pathed `OscarDocument` cannot pass — the

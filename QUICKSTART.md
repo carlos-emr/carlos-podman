@@ -298,7 +298,7 @@ podman ps --pod
 ```
 
 The pod is named `carlos-app`. On a new instance, MariaDB initializes its data
-directory first. The application container then waits for the `oscar` database
+directory first. The application container then waits for the `carlos` database
 that you create in the next step. A `starting` health state is expected at this
 point.
 
@@ -353,7 +353,7 @@ Create the database:
 ```bash
 printf '%s\n' "$DB_PW" | podman exec -i carlos-app-db bash -c \
   'read -r password; export MYSQL_PWD="$password"; mariadb -uroot \
-   -e "CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"'
+   -e "CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"'
 ```
 
 Apply the migrations in order. The `SET NAMES` line pins the session to the
@@ -388,7 +388,7 @@ MIGRATIONS=../carlos/database/mysql/migration
       printf 'SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;\n'
       cat "$MIGRATIONS/$file"; } |
       podman exec -i carlos-app-db bash -c \
-        'read -r password; export MYSQL_PWD="$password"; mariadb -uroot oscar'
+        'read -r password; export MYSQL_PWD="$password"; mariadb -uroot carlos'
   done
 )
 MIGRATION_RC=$?
@@ -634,12 +634,12 @@ the pinned tag and commit; `git checkout <that tag>` — so the migrations you
 apply match the deployed WAR (a default-branch checkout can carry migrations
 newer than the application). Then check
 `database/mysql/migration/README.md` in that checkout for the current
-migration order, and create the `oscar` database through the local container
+migration order, and create the `carlos` database through the local container
 boundary:
 
 ```bash
 sudo EMR_HOME=/usr/local/emr carlos-ctl db -e \
-  'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+  'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 ```
 
 Apply `common/` migrations and the selected province's migrations in version

@@ -67,6 +67,10 @@ _DEFAULTS: Dict[str, str] = {
     "BIND_IP": "127.0.0.1",
     "INSTANCE": "carlos",
     "SERVICE_USER": "carlos",
+    # The EMR schema name. `carlos` replaced the inherited `oscar` default;
+    # existing installs are adopted by `carlos-ctl play` (guarded rename), and
+    # an operator who sets this back to `oscar` keeps that name forever.
+    "CARLOS_DB_NAME": "carlos",
     "SERVER_NAME": "emr.example.ca",
     "CARLOS_IMAGE": "localhost/carlos-app:latest",
     "DRUGREF_IMAGE": "localhost/carlos-drugref:latest",

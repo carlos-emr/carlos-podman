@@ -151,7 +151,7 @@ confidentiality_statement.v3=
 {# ``round`` preserves upstream handling of zero dates. ``convertToNull``
    exposes invalid dates as null instead of substituting a date. Validate
    application behavior before changing this compatibility setting. #}
-db_name=oscar?zeroDateTimeBehavior={{ carlos_jdbc_zero_date | default('round', true) }}&useOldAliasMetadataBehavior=true&jdbcCompliantTruncation=false&characterEncoding=UTF-8&connectionCollation=utf8mb4_general_ci
+db_name={{ carlos_db_name }}?zeroDateTimeBehavior={{ carlos_jdbc_zero_date | default('round', true) }}&useOldAliasMetadataBehavior=true&jdbcCompliantTruncation=false&characterEncoding=UTF-8&connectionCollation=utf8mb4_general_ci
 ### Database Username
 db_username=root
 ### Database Password

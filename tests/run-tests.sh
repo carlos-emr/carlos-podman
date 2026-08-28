@@ -1334,7 +1334,7 @@ assert "DR restore replayed the repo chain from the dump anchor (pos 1234)" \
 assert "the replay session disables binlogging (retry must never double-apply)" \
     log_since "$m" "mariadb-binlog.*sql_log_bin=0"
 assert "the load drop-and-recreates the dumped schema (no merge over live)" \
-    log_since "$m" 'DROP DATABASE IF EXISTS `oscar`'
+    log_since "$m" 'DROP DATABASE IF EXISTS `carlos`'
 refute "DR restore did NOT pre-ship the fresh local binlog.000001 (no pollution)" \
     log_since "$m" "backup /backup/binlog"
 
