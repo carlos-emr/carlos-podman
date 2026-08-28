@@ -642,6 +642,9 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl db -e \
   'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 ```
 
+(If you customized `carlos_db_name` in host_vars, create that name instead —
+`carlos-ctl db-migrate` targets the configured schema.)
+
 Apply `common/` migrations and the selected province's migrations in version
 order. For Ontario, use the `on/` files; for British Columbia, use the `bc/`
 files. Do not load both province data sets. The migration README in the CARLOS

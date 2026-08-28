@@ -496,6 +496,35 @@ def maybe_adopt_default_schema(runner: Runner) -> None:
             warn(f"both `oscar` and `{db}` exist and `{db}` is not empty — refusing to "
                  f"merge; move or drop one by hand, then re-run 'carlos-ctl play'")
             return
+    # Preflight objects RENAME TABLE cannot carry across schemas: MariaDB
+    # refuses to move a table that has TRIGGERS, and views/routines/events
+    # stay bound to the source schema. The stock CARLOS Flyway schema ships
+    # none of these, so this only fires on site-added objects — and then the
+    # right answer is a human migration (mariadb-dump --no-data --routines
+    # --triggers --events, rename, re-import), not a partial move that
+    # strands half the clinical logic in a schema the app no longer reads.
+    blockers = []
+    for what, sql in (
+        ("trigger(s)", "SELECT COUNT(*) FROM information_schema.TRIGGERS "
+                       "WHERE TRIGGER_SCHEMA='oscar'"),
+        ("view(s)", "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA='oscar' AND TABLE_TYPE='VIEW'"),
+        ("routine(s)", "SELECT COUNT(*) FROM information_schema.ROUTINES "
+                       "WHERE ROUTINE_SCHEMA='oscar'"),
+        ("event(s)", "SELECT COUNT(*) FROM information_schema.EVENTS "
+                     "WHERE EVENT_SCHEMA='oscar'"),
+    ):
+        n = (root_sql(sql).stdout or "").strip()
+        if n and n != "0":
+            blockers.append(f"{n} {what}")
+    if blockers:
+        warn(f"the `oscar` schema holds {', '.join(blockers)} — RENAME TABLE cannot "
+             f"carry these across schemas, so the adoption is refused rather than "
+             f"moved partially. Migrate by hand (mariadb-dump --no-data --routines "
+             f"--triggers --events, drop the objects, re-run 'carlos-ctl play', "
+             f"re-import them into `{db}`), or set carlos_db_name: oscar to keep "
+             f"the old name")
+        return
     tables = [t for t in (root_sql(
         "SELECT TABLE_NAME FROM information_schema.TABLES "
         "WHERE TABLE_SCHEMA='oscar' AND TABLE_TYPE='BASE TABLE' "
@@ -505,7 +534,11 @@ def maybe_adopt_default_schema(runner: Runner) -> None:
     stmts = [f"CREATE DATABASE IF NOT EXISTS `{db}` "
              "CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"]
     if tables:
-        pairs = ", ".join(f"`oscar`.`{t}` TO `{db}`.`{t}`" for t in tables)
+        # Backticks inside a (legal) table name are escaped by doubling, so a
+        # hostile or merely unlucky name cannot reshape the root-run DDL.
+        pairs = ", ".join(
+            "`oscar`.`{0}` TO `{1}`.`{0}`".format(t.replace("`", "``"), db)
+            for t in tables)
         stmts.append(f"RENAME TABLE {pairs};")
     cp = runner.podman_user(
         ["exec", "-i", "-e", "MYSQL_PWD", f"{s.app_pod}-db", "mariadb", "-uroot"],
@@ -532,12 +565,16 @@ def maybe_adopt_default_schema(runner: Runner) -> None:
     if gp.returncode != 0:
         warn(f"could not re-grant the app account on `{db}` (accounts not provisioned "
              f"yet?) — 'carlos-ctl db-users' converges the grants")
+    # Belt and braces on top of the preflight: anything created mid-run
+    # (tables, views, routines, events) stays the operator's call — DROP
+    # DATABASE would silently take it along.
     leftover = (root_sql(
-        "SELECT TABLE_NAME FROM information_schema.TABLES "
-        "WHERE TABLE_SCHEMA='oscar'").stdout or "").strip()
+        "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA='oscar' "
+        "UNION ALL SELECT ROUTINE_NAME FROM information_schema.ROUTINES "
+        "WHERE ROUTINE_SCHEMA='oscar' "
+        "UNION ALL SELECT EVENT_NAME FROM information_schema.EVENTS "
+        "WHERE EVENT_SCHEMA='oscar'").stdout or "").strip()
     if leftover:
-        # Views or tables created mid-run stay the operator's call; dropping
-        # the schema would silently take them along.
         warn("the emptied `oscar` schema still holds objects — leaving it in place")
     elif root_sql("DROP DATABASE `oscar`", capture=False).returncode != 0:
         warn("could not drop the emptied `oscar` schema; drop it by hand")

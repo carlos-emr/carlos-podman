@@ -332,6 +332,8 @@ def cmd_setup(runner: Runner) -> int:
      so pipe the Flyway migration SQL through 'carlos-ctl db'. From a
      github.com/carlos-emr/carlos checkout:
        sudo EMR_HOME={emr_home} carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+       (a customized carlos_db_name in host_vars replaces `carlos` here —
+       db-migrate targets the configured name)
        ...then apply database/mysql/migration/ files in version order (common +
        province interleaved), starting with common/V1__baseline_schema.sql —
        see migration/README.md upstream and README, "Schema", for the list.

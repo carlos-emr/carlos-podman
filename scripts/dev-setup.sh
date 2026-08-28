@@ -116,6 +116,21 @@ case "$DB_PW" in
         exit 1 ;;
 esac
 # --- 1. directory layout (QUICKSTART step 3) ---------------------------------------
+# Same one-time document-store adoption as the production role (instance.yml):
+# a pre-rename dev tree keeps its uploaded documents instead of growing a
+# second, empty store next to them. Stat-gated — only the one state where
+# each rename applies is admitted.
+if [ -d "$EMR_HOME/data/OscarDocument" ] && [ ! -L "$EMR_HOME/data/OscarDocument" ] \
+        && [ ! -e "$EMR_HOME/data/CarlosDocument" ]; then
+    mv "$EMR_HOME/data/OscarDocument" "$EMR_HOME/data/CarlosDocument"
+    echo "==> Renamed data/OscarDocument -> data/CarlosDocument (one-time migration)"
+fi
+if [ -d "$EMR_HOME/data/CarlosDocument/oscar" ] && [ ! -L "$EMR_HOME/data/CarlosDocument/oscar" ] \
+        && [ ! -e "$EMR_HOME/data/CarlosDocument/carlos" ]; then
+    mv "$EMR_HOME/data/CarlosDocument/oscar" "$EMR_HOME/data/CarlosDocument/carlos"
+    ln -sn carlos "$EMR_HOME/data/CarlosDocument/oscar"
+    echo "==> Renamed the instance segment oscar -> carlos (compat symlink left behind)"
+fi
 mkdir -p "$EMR_HOME/container/conf/tomcat" \
          "$EMR_HOME/container/conf/carlos" \
          "$EMR_HOME/container/conf/mariadb" \

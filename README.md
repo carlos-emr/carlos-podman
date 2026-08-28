@@ -355,7 +355,7 @@ deployment — use `carlos-ctl db-migrate`, which runs each migration file in
 a client session pinned to the schema's collation:
 
 ```bash
-sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 ```
 
 …then apply the Flyway migration files from a
@@ -938,7 +938,7 @@ the `bc/` twins of V1.0.1/V1.0.2/V1.0.6 and drop the Ontario-only
 V1.0.4/V1.0.11/V1.0.12):
 
 ```bash
-sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS carlos DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 cd database/mysql/migration
 sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
     common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
@@ -1671,7 +1671,7 @@ sudo carlos-ctl db-dump drugref2 > /root/drugref2.sql        # any database
 
 # Import a dump / run a SQL file — stdin streams straight into the client,
 # so compressed dumps import without an intermediate file
-sudo carlos-ctl db oscar < oscar-2026-07-04.sql
+sudo carlos-ctl db carlos < carlos-2026-07-04.sql
 zcat carlos-2026-07-04.sql.gz | sudo carlos-ctl db carlos
 
 # Create a database

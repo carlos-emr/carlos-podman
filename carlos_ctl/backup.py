@@ -1859,7 +1859,9 @@ def _verify_restore(ctx: BackupContext) -> bool:
                       "prescription", "casemgmt_note", "document"):
             cp = vexec(
                 ["mariadb", "--user=root", "-N", "-e",
-                 f"SELECT COUNT(*) FROM {drill_db}.{table}"],  # noqa: S608 — table from the literal tuple above, schema identifier-validated
+                 # Backtick-quoted: an identifier-valid schema name can still
+                 # be all digits, which MariaDB rejects unquoted.
+                 f"SELECT COUNT(*) FROM `{drill_db}`.`{table}`"],  # noqa: S608 — table from the literal tuple above, schema identifier-validated
                 capture=True,
             )
             count = (cp.stdout or "").strip()
