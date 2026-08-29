@@ -83,7 +83,7 @@ WILL REMOVE (host wiring only):
     alert-channel mirror {s.instance_registry_dir}/{s.instance}.alert.env
 
 WILL PRESERVE (delete by hand only if you truly intend to destroy data):
-  - {s.emr_home}/data       (MariaDB datadir, binlogs, OscarDocument — PHI)
+  - {s.emr_home}/data       (MariaDB datadir, binlogs, CarlosDocument — PHI)
   - {s.emr_home}/backup      (restic repo, hot backups)
   - {s.emr_home}/container/conf (rendered config incl. TLS certs) and carlos-app.env
   - TPM cred blobs {s.credstore_dir}/{s.instance}-*.cred (needed to decrypt backups)

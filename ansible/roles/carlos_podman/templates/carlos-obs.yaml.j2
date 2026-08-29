@@ -41,7 +41,7 @@ spec:
     # Root-only setup so every store/view container below can run NON-ROOT:
     # guarded chowns of the persistent store dirs and Caddy's writable
     # emptyDirs (a one-time ownership migration on an existing install, like
-    # the OscarDocument precedent — may take a moment on a large log store),
+    # the CarlosDocument-rename precedent — may take a moment on a large log store),
     # plus staging the TLS cert+key into a tmpfs the non-root logview reads
     # (the host certs dir is 0700, so a direct bind mount is untraversable by
     # uid 10013 — same reason as the waf pod's waf-init). CHOWN is the only

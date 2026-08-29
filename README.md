@@ -338,7 +338,7 @@ sudo EMR_HOME=/usr/local/emr carlos-ctl check
 > **Fresh install — expect this first `play` to exit nonzero.** It starts
 > the pods (which is what steps 7–8 need: the db must be running to load SQL
 > into), then gates go-live on the app AND DrugRef actually serving. On a
-> machine with no `oscar` and no `drugref2` database yet, neither can:
+> machine with no `carlos` and no `drugref2` database yet, neither can:
 > CARLOS waits out its wait-for-db and deploys against a missing schema, and
 > DrugRef's `/drugref2` context cannot start at all. So `play` reports "the
 > app is not serving", writes no go-live markers and arms no timers —
@@ -355,7 +355,7 @@ deployment — use `carlos-ctl db-migrate`, which runs each migration file in
 a client session pinned to the schema's collation:
 
 ```bash
-sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS `carlos` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 ```
 
 …then apply the Flyway migration files from a
@@ -787,7 +787,7 @@ networks, db secret, `$INSTANCE-*` units/timers/quadlets, the nftables
 redirect, the `/run` tmpfs, and its registry entry — freeing its ports and
 `EMR_HOME` for reuse. (Remove it from the inventory too, or the next playbook
 run re-provisions it.) It **preserves all data**: the MariaDB
-datadir/binlogs, `OscarDocument`, the restic repo and hot backups,
+datadir/binlogs, `CarlosDocument`, the restic repo and hot backups,
 `container/conf` (including TLS certs), and the TPM cred blobs (needed to
 decrypt those backups). It prints exactly which directories to remove by hand
 if you truly intend to destroy the data — nothing under `$EMR_HOME` is
@@ -849,13 +849,18 @@ keep it that way when editing by hand: Java properties are last-one-wins, so
 a re-added duplicate would silently win over the managed value.
 
 Document paths changed name with the fork: the container path is now
-`/var/lib/OscarDocument` (was `/var/lib/OpenoDocument`), and all
+`/var/lib/CarlosDocument` (was `/var/lib/OscarDocument`, and
+`/var/lib/OpenoDocument` before that), and all
 `DOCUMENT_DIR`-family properties in the rendered file already point there.
 Your existing files are reused — the playbook renames the host directory
-`data/OpenoDocument` → `data/OscarDocument` once (same filesystem, plain
-`mv`). If your existing tree doesn't contain the `oscar/document/...`
-subdirectories the template expects, adjust the `*_DIR` properties to match
-what you actually have on disk.
+once per generation (`data/OpenoDocument` → `data/OscarDocument` →
+`data/CarlosDocument`; same filesystem, plain `mv`), moves the inner
+`oscar/` instance segment to `carlos/` with a compat symlink at the old
+name, and the pod mounts the store at `/var/lib/OscarDocument` as well as
+`/var/lib/CarlosDocument` so absolute paths already stored in the database
+keep resolving. If your existing tree doesn't contain the
+`carlos/document/...` subdirectories the template expects, adjust the
+`*_DIR` properties to match what you actually have on disk.
 
 ## Database: keeping your MariaDB data
 
@@ -914,9 +919,16 @@ fail fast on a version mismatch. Coming from an OpenO build, review the
 migration READMEs for the adoption/baseline step before pointing the app at
 an existing datadir. For a fresh install, load the schema **after
 `carlos-ctl play`** (the db must be running) and **before first login**.
-(The database itself is named `oscar`, kept as-is for upstream
-compatibility — that name appears only in the SQL and the `carlos-ctl db
-oscar` target, never in user-facing text.) MariaDB publishes no TCP port in
+(The database is named `carlos`; the inherited `oscar` default has been
+renamed. An existing install whose data still lives in `oscar` is adopted
+automatically by the next `carlos-ctl play`, which renames the schema in
+place — atomic `RENAME TABLE`, deliberately binlogged so a point-in-time
+restore replays it — and re-grants the app account. Set
+`carlos_db_name: oscar` in host_vars to keep the old name; an explicit
+value is never migrated. Note for point-in-time restores: a window that
+straddles the adoption lands the tables under `carlos`, and a dump taken
+before it restores under `oscar` — the restore drill checks both
+spellings.) MariaDB publishes no TCP port in
 this deployment (the WAF/DB isolation boundary), so apply the files with
 `carlos-ctl db-migrate` in version order, common and province interleaved —
 from a `github.com/carlos-emr/carlos` checkout **at the release the
@@ -926,7 +938,7 @@ the `bc/` twins of V1.0.1/V1.0.2/V1.0.6 and drop the Ontario-only
 V1.0.4/V1.0.11/V1.0.12):
 
 ```bash
-sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS oscar DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
+sudo EMR_HOME=/usr/local/emr carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS `carlos` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci'
 cd database/mysql/migration
 sudo EMR_HOME=/usr/local/emr carlos-ctl db-migrate \
     common/V1__baseline_schema.sql on/V1.0.1__on_schema.sql \
@@ -996,7 +1008,7 @@ upstream migration README stays authoritative for both provinces.
 | Runtime | older Tomcat / JVM with CMS GC flags | Tomcat 11, JDK 21, G1 GC (`-XX:+UseConcMarkSweepGC` etc. no longer exist and would abort the JVM) |
 | Context path | `/oscar` | `/carlos` (`/` redirects) |
 | Properties | `oscar.properties` secret → `/root/oscar.properties` | host file, assembled by an initContainer into a tmpfs `emptyDir` at `/run/carlos-config/carlos.properties` via `-Dcarlos_override_properties` |
-| Documents | `/var/lib/OpenoDocument` | `/var/lib/OscarDocument` (host dir renamed once by the playbook) |
+| Documents | `/var/lib/OpenoDocument` | `/var/lib/CarlosDocument` (host dir renamed once by the playbook; compat mount at the old paths) |
 | DB image | custom `localhost/mc-demo-db` | official `mariadb` + mounted `zz-carlos.cnf`, auto-upgrade on first start |
 | DB secret | `openo-mc-demo` | `carlos-db` (same `mariadb-root-password-hash` key) |
 | DrugRef | not present (drug lookups unavailable) | in-pod `drugref` container on `127.0.0.1:8180`, same pattern as the upstream devcontainer |
@@ -1045,7 +1057,7 @@ properties, assemble the effective config into a tmpfs `emptyDir` (chowned to
 the app uid, which the app reads read-only), and chown the writable
 hostPath/emptyDir mounts. Tomcat's `ErrorReportValve` leaks neither the
 version nor stack traces. **One-time migrations** on first start after an
-upgrade: `carlos-init` chowns `logs` + the `OscarDocument` store to 10001,
+upgrade: `carlos-init` chowns `logs` + the `CarlosDocument` store to 10001,
 `obs-init` chowns the VictoriaLogs/VictoriaMetrics stores to their new
 non-root uids, `db-init` chowns the vmagent buffer and guards the datadir at
 uid 999 — all guarded, so later starts skip them; a large log store may take
@@ -1148,7 +1160,7 @@ uid 999.
 Blast-radius containment: after `play` (or `carlos-ctl
 db-users`) the app connects to MariaDB as **`carlos`**, DrugRef as
 **`drugref`**, each with privileges scoped to **its own schema only**
-(`GRANT ALL ON oscar.*` / `drugref2.*`) — not root and not `*.*`. The metrics
+(`GRANT ALL ON carlos.*` / `drugref2.*`) — not root and not `*.*`. The metrics
 exporter (`exporter`) and backup (`backup`) accounts are likewise
 least-privilege. So an app-layer SQL injection or RCE cannot reach other
 schemas, `GRANT`, or `FILE`; root is reserved for admin/migration. (The
@@ -1310,7 +1322,7 @@ same source and layout the upstream devcontainer uses
   `carlos.properties`.
 
 **Database (one-time):** DrugRef expects a `drugref2` database next to
-`oscar` — the devcontainer seeds it from upstream's
+`carlos` — the devcontainer seeds it from upstream's
 `database/mysql/development-drugref.sql` plus the patch in
 `database/mysql/drugref/`. An OpenO-era datadir won't have it. With the pod
 running and the two SQL files from a CARLOS checkout at hand:
@@ -1325,7 +1337,7 @@ sudo carlos-ctl db-migrate --db drugref2 \
     database/mysql/drugref/2026-04-19-drugref-tc-atc-f.sql
 ```
 
-(`db-migrate --db <database>` targets a database other than `oscar` — same
+(`db-migrate --db <database>` targets a database other than the EMR schema (`carlos` by default) — same
 collation-pinned per-file sessions and fail-fast contract as the schema
 migrations; a raw `carlos-ctl db drugref2 < file.sql` works too but runs
 unpinned.)
@@ -1351,7 +1363,7 @@ sudo carlos-ctl db -N -B -e "SELECT CONCAT('ALTER TABLE \`drugref2\`.\`',table_n
 sudo carlos-ctl backup full     # now succeeds
 ```
 
-(`oscar.formRourke2009` stays Aria — it has more columns than InnoDB's 1017
+(`carlos.formRourke2009` stays Aria — it has more columns than InnoDB's 1017
 limit, and the audit recognizes it as a known, accepted exception.)
 
 That dataset is the one upstream develops against; refresh or replace it
@@ -1651,16 +1663,16 @@ from the host is a single command. Four paths, by use case:
 sudo carlos-ctl db
 
 # One-liner query
-sudo carlos-ctl db -e 'SELECT COUNT(*) FROM provider' oscar
+sudo carlos-ctl db -e 'SELECT COUNT(*) FROM provider' carlos
 
 # Export — a consistent dump (safe on the running db); ALWAYS redirect it
-sudo carlos-ctl db-dump > /root/oscar-$(date +%F).sql        # dumps `oscar`
+sudo carlos-ctl db-dump > /root/carlos-$(date +%F).sql        # dumps `carlos`
 sudo carlos-ctl db-dump drugref2 > /root/drugref2.sql        # any database
 
 # Import a dump / run a SQL file — stdin streams straight into the client,
 # so compressed dumps import without an intermediate file
-sudo carlos-ctl db oscar < oscar-2026-07-04.sql
-zcat oscar-2026-07-04.sql.gz | sudo carlos-ctl db oscar
+sudo carlos-ctl db carlos < carlos-2026-07-04.sql
+zcat carlos-2026-07-04.sql.gz | sudo carlos-ctl db carlos
 
 # Create a database
 sudo carlos-ctl db -e 'CREATE DATABASE IF NOT EXISTS drugref2'
@@ -1671,7 +1683,7 @@ sudo carlos-ctl db-backup pre-migration-$(date +%F)
 
 # Host-installed mariadb client (or a GUI over an SSH tunnel that supports
 # sockets) — connects as <user>@localhost via the unix socket:
-mariadb -S /usr/local/emr/run/db-socket/mysqld.sock -uroot -p oscar
+mariadb -S /usr/local/emr/run/db-socket/mysqld.sock -uroot -p carlos
 ```
 
 **Password:** with `CARLOS_DB_ROOT_PASSWORD` present in
@@ -1727,7 +1739,7 @@ For quick, non-GUI work, prefer the CLI — see
 [Database admin from the host](#database-admin-from-the-host):
 
 ```bash
-sudo carlos-ctl db        # or raw: runuser -u carlos -- podman exec -it carlos-app-db mariadb -uroot -p oscar
+sudo carlos-ctl db        # or raw: runuser -u carlos -- podman exec -it carlos-app-db mariadb -uroot -p carlos
 ```
 
 On a PHI system this is **break-glass tooling**: whatever MariaDB account you
@@ -1802,7 +1814,7 @@ first deploy; run explicitly with:
 sudo carlos-ctl db-users && sudo carlos-ctl play
 ```
 
-This creates `carlos` (ALL on `oscar.*`), `drugref` (ALL on `drugref2.*`),
+This creates `carlos` (ALL on `carlos.*`), `drugref` (ALL on `drugref2.*`),
 `backup` (global read/dump/binlog privileges only), and `exporter` (metrics —
 `PROCESS`/`REPLICATION CLIENT` + `SELECT` on `performance_schema` only;
 provisioned only when the obs profile is on — re-run `db-users` after
@@ -2000,7 +2012,7 @@ allowed — silent corruption instead of errors. A ready-to-enable STRICT
 block sits in the file (`STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,
 NO_ENGINE_SUBSTITUTION` + `innodb_strict_mode = 1`); uncomment both lines
 and restart the db pod after validating your workload. Related caveat: the
-server is utf8mb4 end-to-end, but oscar-schema columns are frequently
+server is utf8mb4 end-to-end, but EMR-schema columns are frequently
 utf8mb3 — a 4-byte codepoint (emoji, astral-plane CJK in a real name)
 inserted into a utf8mb3 column TRUNCATES the string at that character under
 the permissive mode; STRICT turns that into an error you can see. Column
@@ -2337,17 +2349,18 @@ Behavior changes an existing install should review before/after pulling:
 What each mutation path may touch — the contract the lifecycle is built on:
 
 - **Never touch `$EMR_HOME/data`** (MariaDB datadir, binlogs,
-  `OscarDocument`): `build`, `rebuild`, `play`, `rollback`, `check`,
+  `CarlosDocument`): `build`, `rebuild`, `play`, `rollback`, `check`,
   `status`, `down`, `enable`, `monitor`, `guard`. App upgrades and config
   changes cannot lose data.
 - **Read data, never write it**: `backup` (and its timers), `db-dump`,
   `db-backup`.
 - **Write data ONLY when you ask them to**: `carlos-ctl db` with an import
-  (`db oscar < dump.sql`), `backup restore` (double-confirmed), and SQL you
+  (`db carlos < dump.sql`), `backup restore` (double-confirmed), and SQL you
   run through `db`/`pma` — these are the break-glass paths and run as the
   MariaDB account you supply.
 - **The playbook adopts but never destroys**: it renames
-  `data/OpenoDocument` → `data/OscarDocument` once and creates missing
+  `data/OpenoDocument` → `data/OscarDocument` → `data/CarlosDocument`
+  once per generation and creates missing
   directories; it never overwrites an operator-owned conf/properties/secret
   file, and it regenerates a credential only when no store (plain file,
   legacy cred blob, sealed bundle) holds one.
@@ -2400,7 +2413,7 @@ order of importance:
    The upstream ON/BC schema ships it as `ENGINE=Aria`
    (`migration/on/V1.0.1__on_schema.sql`), and it *cannot* be converted: it
    has **1227 columns**, over InnoDB's hard limit of 1017, so
-   `ALTER TABLE oscar.formRourke2009 ENGINE=InnoDB` fails with
+   `ALTER TABLE carlos.formRourke2009 ENGINE=InnoDB` fails with
    `ERROR 1005 (errno: 185 "Too many columns")` under every `ROW_FORMAT`
    (DYNAMIC/COMPRESSED/COMPACT/REDUNDANT), and `innodb_page_size` is already
    at its 32 KiB maximum. Aria is a deliberate
@@ -2428,7 +2441,7 @@ order of importance:
    is still allowlisted in the app's `FrmRecordFactory` and the view routes
    are still registered, so an existing record reached by a direct URL, or a
    bulk data job touching the table, can still write to it.
-2. **`data/OscarDocument`** — patient documents (read-only mount).
+2. **`data/CarlosDocument`** — patient documents (read-only mount).
 3. **`container/`** — rendered config including the encrypted secrets bundle
    (the repository is encrypted; the plaintext `carlos-app.env`, the
    superseded plaintext `conf/restic`, and the age private key are
@@ -2504,7 +2517,7 @@ Staged plaintext dumps are reaped on the next run and on SIGTERM.
 
 *Document snapshots every 15 minutes* (`<instance>-docs.timer` → `carlos-ctl
 backup docs`, `carlos_docs_oncalendar`): a `--tag docs` snapshot of
-`data/OscarDocument`, so a scan or lab PDF uploaded mid-morning does not wait
+`data/CarlosDocument`, so a scan or lab PDF uploaded mid-morning does not wait
 for the 01:30 full to be protected. restic uploads only files added since the
 last run, so the cadence costs a directory scan plus the new files; the run
 is deliberately database-free, so documents keep shipping even while the db
@@ -2618,7 +2631,7 @@ the real run refuses unless you either type the literal `RESTORE <instance>`
 at the prompt or set `CARLOS_RESTORE_CONFIRMED=<instance>` (the instance
 name, e.g. `carlos` — the legacy `=1` still works one release with a
 deprecation warning). It **drops and re-creates every schema carried by the
-dump** (`oscar`/`drugref2` on a stock install; the `mysql`/`sys` system
+dump** (`carlos`/`drugref2` on a stock install; the `mysql`/`sys` system
 schemas and user databases absent from the dump are preserved) so the binlog
 replay applies onto exactly the dump state, runs the load and replay with
 `sql_log_bin=0` (a failed restore can simply be re-run — nothing is
@@ -2685,7 +2698,9 @@ your escrow, not the bundle: the bundle rides *inside* the repo they unlock.
 #        --host <instance>-emr --tag files --target /tmp/dr
 #    Copy /tmp/dr/backup/container/conf/* over $EMR_HOME/container/conf/
 #    (operator-owned conf, TLS certs, the encrypted secrets bundle) and
-#    /tmp/dr/backup/OscarDocument/* into $EMR_HOME/data/OscarDocument/.
+#    /tmp/dr/backup/CarlosDocument/* into $EMR_HOME/data/CarlosDocument/
+#    (a snapshot from before the directory rename lists
+#    /tmp/dr/backup/OscarDocument/* — same copy, same destination).
 # 2. Re-materialize secrets: place the escrowed age private key at
 #    $EMR_HOME/secrets-private/age-key.txt (root-only 0700 dir, 0600 file)
 #    and run `carlos-ctl seal` (re-seals to this host's TPM where available).
@@ -2714,10 +2729,10 @@ restores this instance's latest dump (`--host <instance>-emr`) into a
 **throwaway** MariaDB (tmpfs datadir, no host mounts, never published),
 **replays the shipped binlogs from the dump's recorded anchor** (so the
 point-in-time-recovery path itself is exercised, not just the base dump), and
-sanity-checks the core tables (`oscar.provider` must be **non-empty**;
+sanity-checks the core tables (`carlos.provider` must be **non-empty**;
 `demographic` and `appointment` must be present). It also asserts the
 **document and config tiers**: the latest `docs` snapshot must be listable
-and non-empty (an unmounted/mis-pathed `OscarDocument` cannot pass — the
+and non-empty (an unmounted/mis-pathed `CarlosDocument` cannot pass — the
 15-minute docs run likewise refuses to stamp success on an empty store;
 `CARLOS_DOCS_MIN_FILES=0` is the explicit pre-go-live opt-out), and the
 `files` snapshot must contain the encrypted secrets bundle (the DR contract).

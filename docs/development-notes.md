@@ -150,7 +150,7 @@ podman logs --tail 200 carlos-app-carlos
 podman inspect carlos-app-carlos --format '{{json .State.Health}}'
 ```
 
-A new instance waits for the `oscar` schema before starting Tomcat. Load the
+A new instance waits for the `carlos` schema before starting Tomcat. Load the
 schema as described in the quick start before treating a `starting` health
 state as a fault.
 
@@ -161,7 +161,7 @@ The following paths persist after `podman kube down`:
 - `$EMR_HOME/container/conf`: rendered application and database configuration;
 - `$EMR_HOME/data/mariadb-mnt`: the MariaDB data directory;
 - `$EMR_HOME/data/mariadb-binlog`: binary logs;
-- `$EMR_HOME/data/OscarDocument`: uploaded development documents; and
+- `$EMR_HOME/data/CarlosDocument`: uploaded development documents; and
 - `$EMR_HOME/logs`: application logs.
 
 `podman kube down` removes the pod but does not remove these host directories.

@@ -116,13 +116,16 @@ case "$DB_PW" in
         exit 1 ;;
 esac
 # --- 1. directory layout (QUICKSTART step 3) ---------------------------------------
+# No adoption of a pre-rename data/OscarDocument tree here: dev instances are
+# disposable by contract (re-run with a fresh EMR_HOME, or reload the demo
+# data). Only production (the Ansible role) migrates existing stores.
 mkdir -p "$EMR_HOME/container/conf/tomcat" \
          "$EMR_HOME/container/conf/carlos" \
          "$EMR_HOME/container/conf/mariadb" \
          "$EMR_HOME/container/guard" \
          "$EMR_HOME/data/mariadb-mnt" \
          "$EMR_HOME/data/mariadb-binlog" \
-         "$EMR_HOME/data/OscarDocument/oscar/document" \
+         "$EMR_HOME/data/CarlosDocument/carlos/document" \
          "$EMR_HOME/logs/carlos" \
          "$EMR_HOME/backup/mariadb-hot" \
          "$EMR_HOME/run/db-socket" \
@@ -161,6 +164,7 @@ enc_key = os.environ["CARLOS_DEV_ENC_KEY"]
 db_pw_props = db_pw.replace("\\", "\\\\")
 values = {
     "jdbc_zero_date": "round",
+    "db_name": "carlos",
     "db_root_password": db_pw_props,
     "encryption_secret_key": enc_key,
     "rx_allergy_checking": "no",

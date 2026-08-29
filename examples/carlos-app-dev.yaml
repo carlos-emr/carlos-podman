@@ -78,7 +78,7 @@ spec:
 
     - name: carlos-init
       image: "localhost/carlos-app:latest"
-      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/OscarDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
+      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/CarlosDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
@@ -101,7 +101,7 @@ spec:
         - name: carlos-logs
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
-          mountPath: /var/lib/OscarDocument
+          mountPath: /var/lib/CarlosDocument
         - name: carlos-work
           mountPath: /tomcat-work
         - name: carlos-temp
@@ -202,14 +202,14 @@ spec:
 
     - name: carlos
       image: "localhost/carlos-app:latest"
-      # Wait for the `oscar` DATABASE to be queryable (not just TCP 3306) so a
+      # Wait for the `carlos` DATABASE to be queryable (not just TCP 3306) so a
       # fresh install whose schema is loaded after `kube play` does not hard-
       # fail Tomcat's context on 'Unknown database'. Creds are read from the
       # assembled carlos.properties (last value wins), and MYSQL_PWD keeps the
       # password off the command line. Decode Java-properties backslash escaping
       # before connecting. Retry for 600 seconds, then start Tomcat and let its
       # liveness probe report an unavailable database.
-      command: ["/usr/bin/tini", "--", "bash", "-c", "P=/run/carlos-config/carlos.properties; u=$(grep -m1 '^db_username=' \"$P\" | cut -d= -f2-); export MYSQL_PWD=\"$(grep '^db_password=' \"$P\" | tail -1 | cut -d= -f2- | sed 's/\\\\\\\\/\\\\/g')\"; ok=0; for i in $(seq 1 120); do mariadb -u\"${u:-root}\" -h 127.0.0.1 oscar -e 'SELECT 1' >/dev/null 2>&1 && { ok=1; break; }; sleep 5; done; unset MYSQL_PWD; [ \"$ok\" = 1 ] || echo 'WARN: oscar DB not queryable after 600s — starting Tomcat anyway (load the schema, then it recovers)' >&2; exec catalina.sh run"]
+      command: ["/usr/bin/tini", "--", "bash", "-c", "P=/run/carlos-config/carlos.properties; u=$(grep -m1 '^db_username=' \"$P\" | cut -d= -f2-); export MYSQL_PWD=\"$(grep '^db_password=' \"$P\" | tail -1 | cut -d= -f2- | sed 's/\\\\\\\\/\\\\/g')\"; ok=0; for i in $(seq 1 120); do mariadb -u\"${u:-root}\" -h 127.0.0.1 carlos -e 'SELECT 1' >/dev/null 2>&1 && { ok=1; break; }; sleep 5; done; unset MYSQL_PWD; [ \"$ok\" = 1 ] || echo 'WARN: carlos DB not queryable after 600s — starting Tomcat anyway (load the schema, then it recovers)' >&2; exec catalina.sh run"]
       securityContext:
         runAsUser: 10001
         runAsGroup: 10001
@@ -285,7 +285,7 @@ spec:
         - name: carlos-logs
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
-          mountPath: /var/lib/OscarDocument
+          mountPath: /var/lib/CarlosDocument
         - name: carlos-work
           mountPath: /usr/local/tomcat/work
         - name: carlos-temp
@@ -370,5 +370,5 @@ spec:
         type: DirectoryOrCreate
     - name: carlos-documents
       hostPath:
-        path: __EMR_HOME__/data/OscarDocument
+        path: __EMR_HOME__/data/CarlosDocument
         type: Directory

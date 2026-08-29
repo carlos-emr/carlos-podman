@@ -1086,10 +1086,10 @@ if [ "$drugref_probes" -ne 2 ]; then
 fi
 # S14 / P3: kube play has no in-pod ordering, so the carlos command must carry
 # the bounded wait-for-db loop (an initContainer would deadlock — see template).
-# P3 upgraded it to wait for the `oscar` DATABASE (not just TCP), reading creds
-# off-argv via MYSQL_PWD.
-if ! grep -q "mariadb -u.*oscar -e 'SELECT 1'" "$WORK/render-on/carlos-app.yaml"; then
-    echo "FAIL: the carlos container no longer waits for the oscar DB before Tomcat"
+# P3 upgraded it to wait for the EMR DATABASE (not just TCP), reading creds
+# off-argv via MYSQL_PWD. The name renders from carlos_db_name (default carlos).
+if ! grep -q "mariadb -u.*carlos -e 'SELECT 1'" "$WORK/render-on/carlos-app.yaml"; then
+    echo "FAIL: the carlos container no longer waits for the EMR DB before Tomcat"
     fail=1
 fi
 if ! grep -q 'MYSQL_PWD' "$WORK/render-on/carlos-app.yaml"; then

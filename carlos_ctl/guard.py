@@ -156,12 +156,14 @@ def cmd_guard(runner: Runner) -> int:
     # 2b. Host firewall — see _hostfw_failures (also run on the accept-empty
     # path above; the acceptance covers data volumes only).
     failures.extend(_hostfw_failures(runner))
-    # 3. Document store: a deployed instance's OscarDocument should not be
+    # 3. Document store: a deployed instance's CarlosDocument should not be
     # empty (an unmounted/mis-pathed dir). Iteration is bounded — cheap on
     # huge stores. CARLOS_DOCS_MIN_FILES=0 skips (pre-go-live opt-out).
+    # s.document_store falls back to the legacy OscarDocument name until the
+    # playbook's one-time rename has run on this host.
     if docs_min > 0:
         count = 0
-        docs = data_dir / "OscarDocument"
+        docs = s.document_store
         if docs.is_dir():
             for p in docs.rglob("*"):
                 if p.is_file():
@@ -170,7 +172,7 @@ def cmd_guard(runner: Runner) -> int:
                         break
         if count < docs_min:
             failures.append(
-                f"{data_dir}/OscarDocument holds fewer than {docs_min} file(s) — the document "
+                f"{docs} holds fewer than {docs_min} file(s) — the document "
                 f"volume looks unmounted or mis-pathed (set CARLOS_DOCS_MIN_FILES=0 for a "
                 f"pre-go-live install)."
             )

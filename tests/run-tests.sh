@@ -143,7 +143,7 @@ mk_home() {  # mk_home <dir> [instance]
     local home="$1" inst="${2:-carlos}"
     mkdir -p "$home/container/conf"/{carlos,drugref,mariadb,tomcat,waf/certs,vector,vmagent,vmalert,caddy,restic,metrics,secrets} \
              "$home/container/guard" \
-             "$home/data"/{mariadb-mnt,mariadb-binlog,OscarDocument} \
+             "$home/data"/{mariadb-mnt,mariadb-binlog,CarlosDocument} \
              "$home/backup" "$home/logs" "$home/run/db-socket" "$home/build"
     cat > "$home/container/carlos-app.env" <<EOF
 EMR_HOME=$home
@@ -203,7 +203,7 @@ EOF
     printf 'x\n' > "$home/data/mariadb-binlog/binlog.000001"
     printf 'x\n' > "$home/data/mariadb-binlog/binlog.000002"
     printf './binlog.000001\n./binlog.000002\n' > "$home/data/mariadb-binlog/binlog.index"
-    printf 'doc\n' > "$home/data/OscarDocument/doc1.pdf"
+    printf 'doc\n' > "$home/data/CarlosDocument/doc1.pdf"
     cat > "$CARLOS_INSTANCE_REGISTRY_DIR/$inst.conf" <<EOF
 INSTANCE=$inst
 EMR_HOME=$home
@@ -1235,12 +1235,12 @@ assert "conf-side sentinel present after init" \
 
 HB3="$WORK/h-docs"; mk_home "$HB3"
 mkdir -p "$HB3/backup/restic-repo/data"
-rm "$HB3/data/OscarDocument/doc1.pdf"
+rm "$HB3/data/CarlosDocument/doc1.pdf"
 assert "an empty docs store still snapshots (exit 0 — one hourly alert, not a page storm)" \
     ctl "$HB3" backup docs
 refute "but the success stamp is WITHHELD for an empty store" \
     test -f "$HB3/backup/.last-docs-ok"
-printf 'doc\n' > "$HB3/data/OscarDocument/doc1.pdf"
+printf 'doc\n' > "$HB3/data/CarlosDocument/doc1.pdf"
 assert "a populated store stamps success" ctl "$HB3" backup docs
 assert "docs stamp present" test -f "$HB3/backup/.last-docs-ok"
 
@@ -1334,7 +1334,7 @@ assert "DR restore replayed the repo chain from the dump anchor (pos 1234)" \
 assert "the replay session disables binlogging (retry must never double-apply)" \
     log_since "$m" "mariadb-binlog.*sql_log_bin=0"
 assert "the load drop-and-recreates the dumped schema (no merge over live)" \
-    log_since "$m" 'DROP DATABASE IF EXISTS `oscar`'
+    log_since "$m" 'DROP DATABASE IF EXISTS `carlos`'
 refute "DR restore did NOT pre-ship the fresh local binlog.000001 (no pollution)" \
     log_since "$m" "backup /backup/binlog"
 
@@ -1602,7 +1602,7 @@ assert "uninstall removed the registry claim" test ! -e "$CARLOS_INSTANCE_REGIST
 assert "uninstall removed the alert-channel mirror" \
     test ! -e "$CARLOS_INSTANCE_REGISTRY_DIR/carlos.alert.env"
 assert "uninstall PRESERVED the data tree (PHI is never auto-deleted)" \
-    test -d "$HU/data/OscarDocument"
+    test -d "$HU/data/CarlosDocument"
 # Pass-19: BOTH instance-owned podman secrets. The role creates
 # <instance>-obs-http (the obs-store basic-auth credential fronting 180 days
 # of PHI-adjacent logs) alongside <instance>-db, but decommission only removed
@@ -1644,7 +1644,7 @@ assert "no-systemd uninstall still removes the db podman secret" \
 assert "no-systemd uninstall still removes the obs-http podman secret" \
     log_since "$m_uninstall_nosd" "secret rm carlos-obs-http"
 assert "no-systemd uninstall still PRESERVES the data tree" \
-    test -d "$HU2/data/OscarDocument"
+    test -d "$HU2/data/CarlosDocument"
 
 # ============================ dev-setup.sh render (M7) ==============================
 # The QUICKSTART helper renders carlos.properties + the dev pod spec in-process

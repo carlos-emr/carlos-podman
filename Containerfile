@@ -221,7 +221,7 @@ RUN groupadd -g 10001 carlos \
     # an integrity-pinned lineage — a curl'd static tini would add a second
     # fetch channel needing its own checksum maintenance.
     # mariadb-client-core provides the `mariadb` client for the pod's
-    # wait-for-db loop ONLY: it polls the `oscar` database before starting
+    # wait-for-db loop ONLY: it polls the configured EMR database before starting
     # Tomcat, so a fresh install whose schema is loaded after `kube play` does
     # not hard-fail the webapp context on 'Unknown database'. The Ubuntu base's
     # `default-mysql-client` resolves to the Oracle mysql-client (no `mariadb`

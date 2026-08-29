@@ -153,6 +153,11 @@ carlos_logcollect_cpu_limit: 1
 carlos_tz: America/Toronto
 carlos_log_verbosity: INFO
 carlos_db_auto_upgrade: "1"
+# The EMR schema name. `carlos` replaced the inherited `oscar` default; an
+# install whose data still lives in `oscar` is adopted (renamed in place) by
+# the next `carlos-ctl play`. Set this to `oscar` to keep the old name — an
+# explicit value here is never migrated.
+carlos_db_name: carlos
 carlos_waf_paranoia: 1
 # CRS defaults (5 inbound / 4 outbound): a single CRITICAL-severity
 # signature scores 5, so at the CRS default a lone SQLi/XSS/RCE hit blocks

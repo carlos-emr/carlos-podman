@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 from typing import IO, List, Optional, Tuple
 
-from . import pitr
+from . import dbops, pitr
 from .config import Settings, parse_env_file
 from .runner import Runner
 from .util import (
@@ -98,8 +98,9 @@ _ROOT_TUNABLES = [
 # only — though the save path is still allowlisted in the app's
 # FrmRecordFactory, so it is retired by configuration, not enforced.
 #
-# Matched on BARE TABLE NAME, case-insensitively: the schema is `oscar` on a
-# stock install but need not be, and MariaDB table names are case-sensitive
+# Matched on BARE TABLE NAME, case-insensitively: the schema is `carlos` on a
+# stock install (`oscar` before the default rename) but need not be, and
+# MariaDB table names are case-sensitive
 # on Linux while the DDL casing has drifted across upstream migrations.
 # Keep this list SHORT and evidence-backed — every entry is a permanently
 # accepted PITR gap. A non-InnoDB table that is narrow enough to convert must
@@ -523,7 +524,7 @@ class BackupContext:
                 "--env-file", str(self.env_file),
                 *self.repo_env,
                 "-v", f"{self.cache_dir}:/root/.cache/restic",
-                "-v", f"{self.s.data_dir}/OscarDocument:/backup/OscarDocument:ro",
+                "-v", f"{self.s.document_store}:/backup/CarlosDocument:ro",
                 "-v", f"{self.s.emr_home}/container:/backup/container:ro",
                 "-v", f"{self.binlog_dir}:/backup/binlog:ro",
                 *self.repo_mount,
@@ -685,14 +686,14 @@ class BackupContext:
 
     def docs_store_populated(self) -> bool:
         """Empty-source guard: restic happily snapshots an empty tree and
-        exits 0, so an unmounted/mis-pathed OscarDocument would stamp success
+        exits 0, so an unmounted/mis-pathed document store would stamp success
         forever while backing up nothing. Bounded count — cheap on huge
         stores. 0 disables (a genuinely fresh pre-go-live install)."""
         threshold = int(self.s.get("CARLOS_DOCS_MIN_FILES", "1") or "1")
         if threshold <= 0:
             return True
         count = 0
-        docs = self.s.data_dir / "OscarDocument"
+        docs = self.s.document_store
         if docs.is_dir():
             for p in docs.rglob("*"):
                 if p.is_file():
@@ -710,7 +711,7 @@ class BackupContext:
             (self.backup_dir / ".last-docs-ok").touch()
         else:
             warn(
-                f"document store {self.s.data_dir}/OscarDocument holds fewer than "
+                f"document store {self.s.document_store} holds fewer than "
                 f"{self.s.get('CARLOS_DOCS_MIN_FILES', '1')} file(s) — snapshot taken but "
                 f"success NOT stamped (unmounted/mis-pathed document dir? a pre-go-live "
                 f"install can set CARLOS_DOCS_MIN_FILES=0 in carlos-app.env)"
@@ -1002,7 +1003,7 @@ def cmd_backup(runner: Runner, args: List[str]) -> int:
             # Deliberately db-free — documents keep shipping even while the
             # db (or the whole pod) is down.
             log("Snapshotting the document store")
-            if ctx.run_restic(["backup", "/backup/OscarDocument",
+            if ctx.run_restic(["backup", "/backup/CarlosDocument",
                                "--tag", "docs"]).returncode != 0:
                 return 1
             # Stamp success only for a NON-EMPTY store; exit 0 either way — a
@@ -1279,7 +1280,7 @@ def _full_backup(ctx: BackupContext) -> bool:
     # superseded plaintext conf/restic, and rolling *.bak are excluded.
     log("Backing up documents and configuration")
     if ctx.run_restic([
-        "backup", "/backup/OscarDocument", "/backup/container", "--tag", "files",
+        "backup", "/backup/CarlosDocument", "/backup/container", "--tag", "files",
         "--exclude", "/backup/container/conf/restic",
         "--exclude", "/backup/container/carlos-app.env",
         "--exclude", "/backup/container/*.sh",
@@ -1395,7 +1396,7 @@ def _verify_docs_content(ctx: BackupContext) -> bool:
     different-bytes is corruption and FAILS the drill. Empty store: skip."""
     import hashlib
 
-    store = ctx.s.data_dir / "OscarDocument"
+    store = ctx.s.document_store
     oldest: Optional[Path] = None
     oldest_mtime = 0.0
     for p in store.rglob("*"):
@@ -1412,14 +1413,34 @@ def _verify_docs_content(ctx: BackupContext) -> bool:
     rel = oldest.relative_to(store)
     sentinel = ctx.backup_dir / f".verify-doc.{os.getpid()}"
     try:
-        fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            cp = ctx.run_restic(
-                ["dump", "latest", "--host", ctx.snapshot_host, "--tag", "docs",
-                 f"/backup/OscarDocument/{rel}"],
-                stdout=f,
-            )
-        if cp.returncode != 0:
+        # The newest docs snapshot right after the rename still carries the
+        # PRE-rename path, which changed in TWO places: the outer mount root
+        # (OscarDocument -> CarlosDocument) AND the inner instance segment
+        # (oscar -> carlos). `rel` comes from the live post-rename tree, so
+        # its leading segment is the new inner name; the OscarDocument
+        # fallback must swap that leading segment back to `oscar` or it can
+        # never match a pre-rename snapshot. Try the canonical path first,
+        # then the fully pre-rename path.
+        rel_parts = rel.parts
+        rel_oscar = rel
+        if rel_parts and rel_parts[0] == "carlos":
+            rel_oscar = Path("oscar", *rel_parts[1:])
+        candidates = [
+            f"/backup/CarlosDocument/{rel}",
+            f"/backup/OscarDocument/{rel_oscar}",
+        ]
+        cp = None
+        for snap_path in candidates:
+            fd = os.open(sentinel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                cp = ctx.run_restic(
+                    ["dump", "latest", "--host", ctx.snapshot_host, "--tag", "docs",
+                     snap_path],
+                    stdout=f,
+                )
+            if cp.returncode == 0:
+                break
+        if cp is None or cp.returncode != 0:
             warn(
                 f"restore drill FAILED — the docs snapshot cannot restore the store's "
                 f"oldest document ({rel}): the snapshot is missing content the live "
@@ -1464,7 +1485,7 @@ def _snapshot_listing_count(ctx: BackupContext, tag: str, needle: str) -> int:
             "--env-file", str(ctx.env_file),
             *ctx.repo_env,
             "-v", f"{ctx.cache_dir}:/root/.cache/restic",
-            "-v", f"{ctx.s.data_dir}/OscarDocument:/backup/OscarDocument:ro",
+            "-v", f"{ctx.s.document_store}:/backup/CarlosDocument:ro",
             "-v", f"{ctx.s.emr_home}/container:/backup/container:ro",
             "-v", f"{ctx.binlog_dir}:/backup/binlog:ro",
             *ctx.repo_mount,
@@ -1524,10 +1545,14 @@ def _verify_restore(ctx: BackupContext) -> bool:
     # Cheap listability gates FIRST (no throwaway DB needed): broken/empty
     # document and config backups must fail the drill, not just the db leg.
     docs_min = int(s.get("CARLOS_DOCS_MIN_FILES", "1") or "1")
-    if docs_min > 0 and _snapshot_listing_count(ctx, "docs", "/backup/OscarDocument/") == 0:
+    # Accept the pre-rename mount path too: right after the OscarDocument ->
+    # CarlosDocument rename the newest docs snapshot still lists old paths.
+    if docs_min > 0 \
+            and _snapshot_listing_count(ctx, "docs", "/backup/CarlosDocument/") == 0 \
+            and _snapshot_listing_count(ctx, "docs", "/backup/OscarDocument/") == 0:
         warn(
             "restore drill FAILED — no listable 'docs' snapshot, or it lists no document "
-            "entries (document backups never ran, or an unmounted/mis-pathed OscarDocument "
+            "entries (document backups never ran, or an unmounted/mis-pathed document store "
             "is being snapshotted empty; set CARLOS_DOCS_MIN_FILES=0 only for a "
             "pre-go-live install)"
         )
@@ -1829,25 +1854,44 @@ def _verify_restore(ctx: BackupContext) -> bool:
         # has providers) so an empty-but-present table can't pass as a good
         # restore. The others are presence-only: a fresh-ish install may
         # legitimately have no drugs/prescriptions/notes/documents yet.
+        # The schema name comes from the DUMP, not the live config: right
+        # after the oscar -> carlos default rename the newest dump still
+        # carries the old name, so fall back to `oscar` when the configured
+        # schema is absent from the restored server.
+        drill_db = dbops.require_db_identifier(s)
+        cp = vexec(
+            # Exact match, not SHOW DATABASES LIKE (`_` is a LIKE wildcard);
+            # drill_db is identifier-validated.
+            ["mariadb", "--user=root", "-N", "-e",
+             "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA "  # noqa: S608 — drill_db is identifier-validated
+             f"WHERE SCHEMA_NAME='{drill_db}'"],
+            capture=True,
+        )
+        if not (cp.stdout or "").strip() and drill_db != "oscar":
+            log(f"  restored dump has no `{drill_db}` schema — checking the pre-rename "
+                f"`oscar` name")
+            drill_db = "oscar"
         for table in ("provider", "demographic", "appointment", "security", "drugs",
                       "prescription", "casemgmt_note", "document"):
             cp = vexec(
                 ["mariadb", "--user=root", "-N", "-e",
-                 f"SELECT COUNT(*) FROM oscar.{table}"],  # noqa: S608 — table from the literal tuple above
+                 # Backtick-quoted: an identifier-valid schema name can still
+                 # be all digits, which MariaDB rejects unquoted.
+                 f"SELECT COUNT(*) FROM `{drill_db}`.`{table}`"],  # noqa: S608 — table from the literal tuple above, schema identifier-validated
                 capture=True,
             )
             count = (cp.stdout or "").strip()
             if not count.isdigit():
                 warn(
-                    f"restore drill FAILED — sanity query on oscar.{table} returned no row "
+                    f"restore drill FAILED — sanity query on {drill_db}.{table} returned no row "
                     f"count (dump truncated or missing tables?)"
                 )
                 return False
             if table == "provider" and int(count) == 0:
-                warn("restore drill FAILED — oscar.provider is EMPTY in the restored dump "
+                warn(f"restore drill FAILED — {drill_db}.provider is EMPTY in the restored dump "
                      "(a valid CARLOS DB always has providers)")
                 return False
-            log(f"  oscar.{table} rows in the restored dump: {count}")
+            log(f"  {drill_db}.{table} rows in the restored dump: {count}")
         log("Restore drill OK — docs/files snapshots listable, dump loaded, binlogs "
             "replayed, core tables present")
         return True
