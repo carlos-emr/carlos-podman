@@ -98,9 +98,16 @@ Files:
   `db-migrate [--db <database>]` / `db-dump` / `db-backup` /
   `pma [--ttl <min>]` (break-glass); `db-users` / `seal` /
   `rotate <db|db-root|log-view|obs|age-key|restic>` (security);
+  `o19-preflight` / `import-o19` (experimental OSCAR 19 clinic migration —
+  the engine comes from the CARLOS release this host deploys);
   `--instance <name>` / `instances [--prune]` / `uninstall` / `setup`
   (multi-instance); the unit-driven verbs `guard`, `secrets render`, and
-  `alert <unit> <msg>`; plus `help` and `version`
+  `alert <unit> <msg>`; plus `help` and `version`. The OSCAR 19 verbs are the
+  one part of the CLI whose implementation is not here: `o19compat.py`,
+  `o19source.py`, `o19runtime.py` and `o19import_cmd.py` fetch, verify and
+  load the migration engine from the CARLOS release this host deploys, and
+  answer its deployment questions — see
+  [Migrating a clinic from OSCAR 19](#migrating-a-clinic-from-oscar-19-experimental)
 - `ansible/site.yml` — the provisioning playbook (one inventory host = ONE
   instance); `ansible/inventory.example` — starter inventory
 - `ansible/roles/carlos_podman/` — the role: `defaults/main.yml` (the complete
@@ -2186,6 +2193,115 @@ nothing downstream changes.
   so an all-image release build needs no `*_SRC_SHA256` and no
   `SOURCE_DATE_EPOCH`.
 
+## Migrating a clinic from OSCAR 19 (experimental)
+
+`carlos-ctl o19-preflight` and `carlos-ctl import-o19` migrate an existing
+OSCAR 19 clinic — its database, its patient documents and its
+`oscar.properties` — into a freshly provisioned instance. **The feature is
+experimental: its output must receive a technical review before clinical
+use.**
+
+### Where the importer comes from
+
+It is not vendored in this repository. The importer's two manifests are
+**generated from CARLOS's own Flyway migrations and the OSCAR 19 schema**, so
+every ruling in them ("this column merges there", "this table is
+archive-only") is correct for exactly one CARLOS version. A copy kept here
+would be right the day it was copied and silently wrong after the next
+release, in a way no test in this repository could see.
+
+So the engine is taken from **the CARLOS tree this instance already deploys**
+— the release and commit `carlos-ctl source` prints. On the first run the
+verb downloads that commit's source tarball from codeload.github.com,
+unpacks only `debian/assets/carlos_ctl/o19*.py` into
+`$EMR_HOME/o19-import/engine/<commit>/`, checks that every package sibling
+the engine imports is one this deployment can answer, and loads it. Later
+runs reuse the unpacked tree offline. Consequences worth knowing:
+
+- **A pinned CARLOS version is required.** `carlos-ctl build` (or
+  `carlos-ctl source set <tag|sha>`) pins one; without it the verb refuses
+  rather than guessing. A pin that names no commit is refused for the same
+  reason.
+- **Upgrading CARLOS changes the importer.** The engine is keyed by commit,
+  so a `source update` between two runs of the same import means the second
+  run loads a different manifest — which the engine's own manifest-change
+  refusal reports rather than silently continuing.
+- **The first run needs outbound access to codeload.github.com.** Everything
+  after it is offline.
+
+### What this deployment answers
+
+The phase order, the ledger, the workspace lock, the resume rules, every
+refusal and the verification report are the engine's, identical to the Debian
+package's. What differs is the substrate, and podman answers it here
+(`carlos_ctl/o19runtime.py`):
+
+| question | this deployment's answer |
+|---|---|
+| workspace | `$EMR_HOME/o19-import` (per `--instance`) |
+| document tree | `Settings.document_store` — `$EMR_HOME/data/CarlosDocument` |
+| database client | `mariadb` **inside the db container**, reached through `runuser` → `podman exec`, with `MYSQL_PWD` forwarded by name (MariaDB publishes no TCP port here) |
+| staging credential | the same off-argv environment channel — no defaults file |
+| document ownership | container uid `10001`, resolved through the service user's rootless id map to its host subuid |
+| pre-import snapshot | `carlos-ctl backup full` — the clinic's own restic repository |
+| schema gate | `flyway_schema_history` when this instance has one, else P0's pristine-seed floors (see below) |
+| app-running gate | the `<instance>-app-carlos` container must be **stopped** and `<instance>-app-db` **running** |
+
+### Running it
+
+1. **Provision and migrate the target instance normally** — `play`, then the
+   CARLOS migration set applied with `carlos-ctl db-migrate` from a checkout
+   at the release this deployment runs (`carlos-ctl source` prints it). Do
+   not log in: the import refuses a target that is not a stock deploy.
+2. **Set `carlos_billing_province`** in host_vars and re-run the playbook.
+   The importer binds its manifest profile to `billregion` in
+   `carlos.properties` — the same value the application bills under — so
+   `ON` and `BC` are the supported provinces and `generic` is refused by
+   name.
+3. **Assess the clinic's bundle**: `carlos-ctl o19-preflight …` (run it with
+   `--help` for the full flag set). Exit `0` is go, `1` is go with
+   acknowledgements, `2` is no-go; anything else is a tool error.
+4. **Stop only the application container**, leaving the database up:
+
+   ```
+   runuser -u <service user> -- podman stop <instance>-app-carlos
+   ```
+
+   `carlos-ctl down` stops the database too, which the import needs.
+5. **Import**: `carlos-ctl import-o19 --admin-user <name> …`. The verb takes
+   the per-instance mutating lock for its whole run, so no rotate, seal or
+   play can interleave with it.
+6. **Review the verification report**, apply the properties fragment the
+   import writes, then `carlos-ctl play` to bring the application back.
+7. **`carlos-ctl import-o19 --cleanup`** once the migration is reviewed. This
+   is not optional housekeeping: until it runs, the workspace holds the
+   clinic's staged plaintext dump.
+
+### The schema gate, honestly
+
+The Debian package runs Flyway's own `validate` out of its exploded webapp.
+There is no host-side Flyway runner here — the WAR lives inside the image,
+and this deployment's documented path applies the migration set as raw SQL
+through `carlos-ctl db-migrate`, which records nothing. So `import-o19`
+checks the evidence that exists: a `flyway_schema_history` carrying a FAILED
+row, or missing a version the deployed image ships, is refused; no history
+table at all warns and defers to **P0's pristine-seed floors**, which count
+the stock rows the deployed CARLOS version seeds and refuse a target that is
+not a stock deploy of it.
+
+### What the import needs from you
+
+- `CARLOS_DB_ROOT_PASSWORD` in `carlos-app.env` — the import runs hundreds of
+  statements as database root and cannot prompt. The verb refuses up front
+  rather than failing three phases in with access-denied.
+- A **configured backup**: `RESTIC_PASSWORD`/`RESTIC_REPOSITORY`, or a sealed
+  bundle. The pre-import snapshot is the rollback point everything after the
+  ETL assumes exists.
+- The service user's `/etc/subuid` and `/etc/subgid` ranges (the provisioning
+  playbook creates them). The restored document tree is chowned to the host
+  id that container uid 10001 maps to; if that cannot be resolved the import
+  refuses rather than leaving a tree the application cannot read.
+
 ## Updating
 
 Different kinds of update take different commands. The rule of thumb: **the
@@ -3375,7 +3491,13 @@ with direct egress.
   provable assertion). The curl stub also answers the GitHub releases API
   deterministically (`STUB_GH_RELEASES`/`STUB_GH_DOWN`), so the release-first
   version resolution, the sticky pin, and its offline behavior are asserted
-  end to end. Run it after changing anything under `carlos_ctl/`.
+  end to end. It also serves a real source tarball with the CARLOS layout
+  (`tests/o19_fake_engine.py`) so the OSCAR 19 port's fetch → scoped extract →
+  import-surface verification → load path runs against the real `tar` and the
+  real loader, and asserts that the engine ends up on THIS deployment's
+  answers (workspace, document store, `podman exec` client, `billregion`
+  province) rather than the Debian package's. Run it after changing anything
+  under `carlos_ctl/`.
 - **`tests/unit/`** — pytest for the pure logic: env-file parse-don't-source
   semantics, port/BIND_IP/CIDR validation, PITR anchor extraction, secrets
   bundle round-trips, monitor throttling, and the release-resolution policy

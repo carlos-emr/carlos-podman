@@ -57,6 +57,15 @@ OPERATIONS:
   secrets render        render sealed secrets into /run tmpfs (run by its unit)
   alert <unit> <msg>    dispatch one alert (used by OnFailure= units)
 
+MIGRATION FROM OSCAR 19 (experimental):
+  o19-preflight [...]   assess an OSCAR 19 clinic's bundle and print a verdict
+                        (go / go with acknowledgements / no-go) — changes nothing
+  import-o19 [...]      migrate that clinic into this instance: P0-P7, a
+                        verified report, then '--cleanup' once reviewed. The
+                        engine comes from the CARLOS release this host deploys
+                        ('carlos-ctl source show'); run both verbs with --help
+                        for the full flag set
+
 DATA & BREAK-GLASS:
   db [args]             mariadb shell in the db container (root)
   db-migrate [--db <database>] <file.sql>...  apply schema migrations in order
@@ -89,6 +98,10 @@ playbook); environment variables provide defaults for anything unset there.
 _MUTATING = {
     "build", "rebuild", "play", "rollback", "down", "enable", "cert-renew",
     "db-backup", "db-migrate", "db-users", "seal", "rotate", "uninstall",
+    # import-o19 rewrites the clinic's schema for hours; nothing else may
+    # touch this instance while it runs (a rotate mid-import would change the
+    # app credentials the properties fragment is written against).
+    "import-o19",
 }
 
 
@@ -122,6 +135,13 @@ def _gating(verb: str, rest: List[str]) -> Tuple[bool, bool]:
         writing = rest[:1] in (["update"], ["set"], ["clear"])
         return writing, writing
     if verb == "db":
+        return False, True
+    # o19-preflight only reads the clinic's bundle and this instance's schema,
+    # but it STAGES a plaintext dump into the workspace and is the one verb an
+    # operator runs while deciding which instance to migrate into — so the
+    # wrong-instance banner applies, the cross-verb lock does not (the engine
+    # takes its own workspace lock, and a preflight must not block a rotate).
+    if verb == "o19-preflight":
         return False, True
     return False, False
 
@@ -246,6 +266,15 @@ def _dispatch(verb: str, args: List[str], runner: Runner) -> int:
     if verb == "backup":
         from . import backup
         return backup.cmd_backup(runner, args)
+    if verb in ("import-o19", "o19-preflight"):
+        # Lazy import: the engine modules are fetched from the pinned CARLOS
+        # tree and the generated schema manifest is megabytes — no other verb
+        # should pay for that.
+        from . import o19import_cmd
+
+        if verb == "import-o19":
+            return o19import_cmd.cmd_import_o19(runner, args)
+        return o19import_cmd.cmd_o19_preflight(runner, args)
     if verb == "monitor":
         from . import monitor
         return monitor.cmd_monitor(runner)

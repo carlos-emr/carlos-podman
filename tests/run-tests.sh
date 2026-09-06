@@ -164,7 +164,12 @@ DRUGREF_ARTIFACT=auto
 DRUGREF_SOURCE_BRANCH=master
 EOF
     chmod 0600 "$home/container/carlos-app.env"
-    printf 'db_username=carlos\ndb_password=app-pw\n' > "$home/container/conf/carlos/carlos.properties"
+    # billregion is what the role's carlos.properties.j2 renders from
+    # carlos_billing_province; the app bills under it AND the OSCAR 19
+    # importer binds its manifest profile to it, so the fabricated home has
+    # to carry it like the real render does.
+    printf 'db_username=carlos\ndb_password=app-pw\nbillregion=ON\n' \
+        > "$home/container/conf/carlos/carlos.properties"
     printf 'db_user=drugref\ndb_password=drugref-pw\n' > "$home/container/conf/drugref/drugref2.properties"
     printf '[mysqld]\nbind_address = 127.0.0.1\nlog_bin = /var/lib/mysql-binlog/binlog\n' \
         > "$home/container/conf/mariadb/zz-carlos.cnf"
@@ -1666,6 +1671,100 @@ refute "no unrendered placeholder remains in the dev pod spec" \
 assert "both rendered files are mode 600 (carry the db password + key)" \
     bash -c "test \"\$(stat -c %a '$DEVH/container/conf/carlos/carlos.properties')\" = 600 \
              && test \"\$(stat -c %a '$DEVH/carlos-app-dev.yaml')\" = 600"
+
+# ===================== OSCAR 19 import: the port's own seams ======================
+# The engine itself lives in carlos-emr/carlos and is tested there; what this
+# repository owns is the DEPLOYMENT seam — which CARLOS the engine comes from,
+# where it lands, and whose answers it runs on. All of it is hermetic: the
+# curl stub serves a real tar.gz with the CARLOS source layout carrying the
+# minimal engine tests/o19_fake_engine.py builds, and the REAL tar unpacks it.
+HO19="$WORK/o19"; mk_home "$HO19"
+O19_SHA="1111111111111111111111111111111111111111"
+
+refute "import-o19 refuses with no pinned CARLOS version" ctl "$HO19" import-o19
+assert "the refusal points at the pin, not at the import" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 2>&1 \
+        | grep -q 'carlos-ctl source'"
+
+# Pin a version the way a real host does: resolve it from the (stubbed) API.
+assert "source set pins the CARLOS the importer will be taken from" \
+    ctl "$HO19" source set "$O19_SHA"
+
+env_set "$HO19" CARLOS_DB_ROOT_PASSWORD ""
+refute "import-o19 refuses when the client cannot authenticate" ctl "$HO19" import-o19
+assert "the refusal names CARLOS_DB_ROOT_PASSWORD, not an access-denied error" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 2>&1 \
+        | grep -q CARLOS_DB_ROOT_PASSWORD"
+refute "nothing was fetched before that refusal" test -d "$HO19/o19-import/engine"
+env_set "$HO19" CARLOS_DB_ROOT_PASSWORD test-root-pw
+
+m=$(mark)
+assert "import-o19 fetches, verifies and runs the pinned engine" \
+    ctl "$HO19" import-o19 --dry-run
+assert "the engine was fetched from codeload at the PINNED commit" \
+    log_since "$m" "codeload.github.com/carlos-emr/carlos/tar.gz/$O19_SHA"
+assert "the engine landed under \$EMR_HOME, keyed by that commit" \
+    test -f "$HO19/o19-import/engine/$O19_SHA/o19import.py"
+# The tarball deliberately carries a non-module file BESIDE the modules and
+# one above them: neither may land, or an archive fetched over the network
+# decides what sits inside the package the loader imports from.
+refute "the extract is member-scoped (a non-module file beside them is dropped)" \
+    test -e "$HO19/o19-import/engine/$O19_SHA/not_an_engine_module.py"
+refute "...and nothing above the engine directory landed either" \
+    bash -c "find '$HO19/o19-import' -name README.md | grep -q ."
+assert "every required engine module was unpacked" \
+    bash -c "test \"\$(ls '$HO19/o19-import/engine/$O19_SHA'/*.py | wc -l)\" = 12"
+
+# The whole point of the port: the engine runs on PODMAN's answers.
+o19_out() { EMR_HOME="$HO19" python3 -m carlos_ctl.cli "$@" 2>&1; }
+assert "the engine's workspace is this instance's, not the deb's" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 --dry-run \
+        | grep -q 'workspace=$HO19/o19-import'"
+assert "the engine's documents root is this instance's document store" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 --dry-run \
+        | grep -q 'documents=$HO19/data/CarlosDocument'"
+assert "the engine's client runs inside the db container as the service user" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 --dry-run \
+        | grep -q 'client=runuser -u $SERVICE_USER -- env .* podman exec -i -e MYSQL_PWD carlos-app-db mariadb -uroot'"
+refute "no deb path reached the engine" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 --dry-run \
+        | grep -q /var/lib/carlos-emr"
+
+# billregion in carlos.properties is the ONE province source: the app bills
+# under it, so the manifest profile must bind to it and nothing else.
+assert "the province comes from billregion (ON)" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 --dry-run \
+        | grep -q 'province=on'"
+sed -i 's/^billregion=.*/billregion=BC/' "$HO19/container/conf/carlos/carlos.properties"
+assert "a BC instance binds the BC profile" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli import-o19 --dry-run \
+        | grep -q 'province=bc'"
+sed -i 's/^billregion=.*/billregion=generic/' "$HO19/container/conf/carlos/carlos.properties"
+refute "a 'generic' billregion is refused (no curated profile exists)" \
+    ctl "$HO19" import-o19 --dry-run
+sed -i 's/^billregion=.*/billregion=ON/' "$HO19/container/conf/carlos/carlos.properties"
+
+# A second run must not re-fetch: the engine is content-addressed by commit.
+m=$(mark)
+assert "a second run reuses the unpacked engine" ctl "$HO19" import-o19 --dry-run
+refute "...without touching the network" log_since "$m" codeload.github.com
+
+# The preflight verb keeps the engine's VERDICT exit codes (2 = no-go).
+EMR_HOME="$HO19" python3 -m carlos_ctl.cli o19-preflight >/dev/null 2>&1
+assert "o19-preflight returns the engine's verdict code verbatim" \
+    bash -c "EMR_HOME='$HO19' python3 -m carlos_ctl.cli o19-preflight >/dev/null 2>&1; test \$? -eq 2"
+assert "o19-preflight prints the wrong-instance target banner" \
+    bash -c "cd '$ROOT' && EMR_HOME='$HO19' python3 -m carlos_ctl.cli o19-preflight 2>&1 \
+        | grep -q 'target: instance=carlos'"
+
+# Transport failures must refuse, never half-install an engine.
+rm -rf "$HO19/o19-import/engine"
+refute "an unreachable codeload refuses the import" \
+    ctle "$HO19" STUB_O19_TARBALL_DOWN=1 -- import-o19 --dry-run
+refute "a download that wrote nothing refuses the import" \
+    ctle "$HO19" STUB_O19_TARBALL_EMPTY=1 -- import-o19 --dry-run
+refute "no engine directory was left behind by either failure" \
+    test -d "$HO19/o19-import/engine/$O19_SHA"
 
 # ===================== host-path containment (pass-17 H8) ==========================
 # EVERY host path Settings resolves must be redirected by THIS script before a

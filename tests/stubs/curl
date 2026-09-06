@@ -82,6 +82,28 @@ if [[ "$url" == https://ghcr.io/v2/*/manifests/* ]]; then
     exit 0
 fi
 
+# codeload source tarballs (carlos_ctl.o19source): serve a REAL tar.gz with
+# the CARLOS source layout, carrying the minimal engine
+# tests/o19_fake_engine.py builds. The port's fetch -> scoped extract ->
+# import-surface verification -> load path then runs end to end against the
+# real tar and the real loader.
+#   STUB_O19_TARBALL_DOWN=1   codeload becomes unreachable (exit 7)
+#   STUB_O19_TARBALL_EMPTY=1  exits 0 without writing the file (a proxy 204)
+if [[ "$url" == https://codeload.github.com/carlos-emr/carlos/tar.gz/* ]]; then
+    [[ -n "${STUB_O19_TARBALL_DOWN:-}" ]] && exit 7
+    [[ -n "${STUB_O19_TARBALL_EMPTY:-}" ]] && exit 0
+    o19_sha="${url##*/}"
+    o19_out=""
+    o19_prev=""
+    for a in "$@"; do
+        [[ "$o19_prev" == "-o" ]] && o19_out="$a"
+        o19_prev="$a"
+    done
+    [[ -z "$o19_out" ]] && exit 2
+    o19_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    exec python3 "$o19_root/tests/o19_fake_engine.py" "$o19_out" "$o19_sha"
+fi
+
 GH_SHA="1111111111111111111111111111111111111111"
 GH_WAR_SHA="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 GH_DR_SHA="3333333333333333333333333333333333333333"

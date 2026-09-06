@@ -68,6 +68,8 @@ class Runner:
         env: Optional[Mapping[str, str]] = None,
         quiet: bool = False,
         timeout: Optional[float] = None,
+        encoding: Optional[str] = None,
+        errors: Optional[str] = None,
     ) -> subprocess.CompletedProcess:
         """One chokepoint for every external command. `env` entries are ADDED
         to the inherited environment (the off-argv secret channel); passing a
@@ -82,7 +84,16 @@ class Runner:
         restores — are never killed mid-flight. When a bounded call expires the
         child is killed and, unless check=True, a synthetic nonzero result is
         returned so ok()/output() report FAILURE and the caller's fail-closed
-        path runs (a hang must read as a failure, not a crash)."""
+        path runs (a hang must read as a failure, not a crash).
+
+        `encoding`/`errors` pin how the child's TEXT output is decoded. They
+        default to None — subprocess then uses locale.getpreferredencoding(),
+        which is what every caller here has always got. The o19 import seam
+        (carlos_ctl.o19compat) sets utf-8/replace explicitly because the bytes
+        crossing it are CLINIC data — mariadb client output, tar listings,
+        document names — and under LANG=C a locale decode turns a patient name
+        into mojibake in the migrated database, or raises UnicodeDecodeError
+        mid-phase."""
         full_env = None
         if env:
             full_env = dict(os.environ)
@@ -94,6 +105,8 @@ class Runner:
                 capture_output=(capture or quiet) and stdout is None,
                 stdout=stdout,
                 text=True,
+                encoding=encoding,
+                errors=errors,
                 input=input_text,
                 stdin=stdin if input_text is None else None,
                 env=full_env,
