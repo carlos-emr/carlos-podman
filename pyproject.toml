@@ -7,8 +7,17 @@
 # /usr/local/sbin/carlos-ctl shim; runtime deps (PyYAML, bcrypt) come from
 # distro packages (python3-yaml, python3-bcrypt). This file exists for the dev
 # toolchain (ruff/mypy/pytest) and for editable installs on a workstation.
+#
+# The PROJECT name is carlos-podman-ctl, not carlos-ctl: the single-host
+# Debian deployment's administration command is a different package with the
+# same command name and import name, released from its own repository,
+# github.com/carlos-emr/carlos-ctl (the `carlos-ctl` .deb that carlos-emr
+# depends on). The two trees are separate on purpose (see the package
+# docstring); unifying them there is a later issue. The command stays
+# `carlos-ctl` and the import name `carlos_ctl` — nothing an operator or the
+# Ansible role touches changes.
 [project]
-name = "carlos-ctl"
+name = "carlos-podman-ctl"
 version = "2.0.0-beta2"
 description = "CARLOS EMR podman deployment: host runtime CLI (lifecycle, secrets, backup, monitoring)"
 readme = "README.md"
