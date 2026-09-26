@@ -20,6 +20,17 @@ pip install ruff==0.15.8 mypy==1.19.1 pytest PyYAML 'bcrypt<4.1' types-PyYAML
 against bcrypt >= 4.1 — and satisfies the CLI's own `bcrypt>=3.2` floor, so
 one environment serves both suites.)
 
+If this checkout was ever installed in editable mode (`pip install -e .`)
+under the distribution's former name, `carlos-ctl`, pip treats the renamed
+distribution `carlos-podman-ctl` as a second package rather than an
+upgrade, and both then own the shared `carlos-ctl` launcher (uninstalling
+the old one removes it). Remove both before reinstalling:
+
+```bash
+pip uninstall -y carlos-ctl carlos-podman-ctl
+pip install -e .
+```
+
 (The exact pinned toolchain CI uses is in
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) — match it when
 a local result disagrees with CI. For the Ansible checks you also need
