@@ -1012,10 +1012,15 @@ must exist. No floating replacement image is pulled for a clinical import.
 
 Run the updated provisioning role and image build first. The CARLOS image now
 uses digest-pinned Tomcat 11 / Java 25; an old Java 21 image fails the capability
-gate. Admission is off by default. Configure and review `cds.import.enabled`,
-the supported maintenance window, approved source profiles/namespace and
+gate. Admission is off by default. Set `carlos_cds_import_enabled: true` and
+`carlos_cds_import_maintenance_mode: true` only for the approved import window,
+after applying and backing up the matching CARLOS schema. The role enables the
+native writer guard and validation-only Flyway boot gate with import admission;
+it never applies an implicit migration. The clinical normalization timezone is
+the instance's `carlos_tz`. Review the approved source profiles/namespace and
 explicit OS-operator/provider delegation in `carlos.properties` before clinical
-execution. Root access or selecting a provider number alone is insufficient.
+execution. Stop ordinary application/ingestion writers according to the CARLOS
+maintenance runbook. Root access or selecting a provider number alone is insufficient.
 The command's first step is a bounded, side-effect-free engine capability probe.
 
 The provisioned host layout is:

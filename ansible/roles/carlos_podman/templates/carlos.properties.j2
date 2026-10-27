@@ -1238,6 +1238,9 @@ WAF_RATE_LIMIT_CLEANUP_INTERVAL_SECONDS=300
 # clinical normalization, recovery and performance gates have passed.
 cds.import.enabled={{ carlos_cds_import_enabled | bool | lower }}
 cds.import.maintenanceMode={{ carlos_cds_import_maintenance_mode | bool | lower }}
+cds.import.maintenanceGuardEnabled={{ carlos_cds_import_enabled | bool | lower }}
+carlos.flyway.onBoot={{ carlos_cds_import_schema_mode }}
+cds.import.clinicalZone={{ carlos_tz }}
 cds.import.allowedRoot=/var/lib/carlos-emr/cds-import/source
 cds.import.stagingRoot=/var/lib/carlos-emr/cds-import/state/runs
 cds.import.uploadRoot=/var/lib/carlos-emr/cds-import/state/uploads

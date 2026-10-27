@@ -101,6 +101,7 @@ carlos_drugref_image: localhost/carlos-drugref:latest
 carlos_cds_import_enabled: false
 carlos_cds_import_maintenance_mode: false
 carlos_cds_import_heap_mib: 512
+carlos_cds_import_schema_mode: "{{ 'validate' if carlos_cds_import_enabled | bool else 'off' }}"
 carlos_db_image: "docker.io/library/mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7"
 carlos_victorialogs_image: "docker.io/victoriametrics/victoria-logs:v1.51.0@sha256:e16dd33a95623cc21730cf5285344ed9f97419eeaff7d24b039c135beb85ee7e"
 # DEBIAN variant on purpose: Vector's journald source shells out to

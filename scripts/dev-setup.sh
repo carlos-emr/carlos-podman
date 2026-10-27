@@ -187,6 +187,8 @@ values = {
     "cds_import_enabled": "false",
     "cds_import_maintenance_mode": "false",
     "cds_import_heap_mib": "512",
+    "cds_import_schema_mode": "off",
+    "tz": "America/Toronto",
     "buildtag": "carlos-podman",
 }
 
