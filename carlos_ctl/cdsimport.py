@@ -120,7 +120,7 @@ def _remove(runner: Runner, name: str) -> bool:
         return False
 
 
-def _probe(runner: Runner, image: str, app: str) -> int:
+def _probe(runner: Runner, image: str, app: str, *, submission_lookup: bool = False) -> int:
     name = runner.settings.instance + "-cds-probe-" + uuid.uuid4().hex
     primary_error = False
     try:
@@ -136,6 +136,9 @@ def _probe(runner: Runner, image: str, app: str) -> int:
                 or not 128 <= caps["cliHeapMiB"] <= 16384:
             raise CdsCommandError(
                 "CDS_HANDSHAKE: deploy matching Java25 CARLOS and CLI versions", 2)
+        if submission_lookup and caps.get("submissionLookup") is not True:
+            raise CdsCommandError(
+                "CDS_HANDSHAKE: deploy a matching CARLOS release with submission lookup", 2)
         return int(caps["cliHeapMiB"])
     except BaseException:
         primary_error = True
@@ -187,7 +190,7 @@ def cmd_cds_import(runner: Runner, argv: Sequence[str]) -> int:
         _mounts_safe(runner, app)
         # The bounded probe uses Java's actual production Properties loader;
         # never duplicate effective config semantics in the Python wrapper.
-        heap = _probe(runner, image, app)
+        heap = _probe(runner, image, app, submission_lookup=bool(args.status_submission))
         nonce = str(uuid.uuid4())
         issued = int(time.time())
         attestation = json.dumps({

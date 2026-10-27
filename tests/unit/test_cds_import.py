@@ -235,3 +235,32 @@ def test_linked_state_cannot_be_silently_backed_up_elsewhere(mk_runner, tmp_path
 def test_shared_protocol_rejects_ambiguous_or_reconfigured_work(argv: List[str]) -> None:
     with pytest.raises(cdsprotocol.CdsCommandError):
         cdsprotocol.parse_args(argv)
+
+
+def test_submission_lookup_is_scoped_status_without_resubmission(prepared) -> None:
+    runner, _, _ = prepared
+    runner.script("podman", "start", "--attach", out=json.dumps({**CAPS, "submissionLookup": True}))
+    request = ["--status-submission", "submission-123", "--provider", "T099"]
+    assert cdsimport.cmd_cds_import(runner, request) == 0
+    actual = [call for call in runner.calls if "--operation" in call][-1]
+    assert actual[actual.index("--operation"):] == [
+        "--operation", "status", "--provider", "T099", "--submission-key", "submission-123"]
+    assert "--input" not in actual
+
+
+@pytest.mark.parametrize("feature", [None, False, 1])
+def test_submission_lookup_requires_explicit_runtime_feature(prepared, feature) -> None:
+    runner, _, _ = prepared
+    runner.script("podman", "start", "--attach",
+                  out=json.dumps({**CAPS, "submissionLookup": feature}))
+    request = ["--status-submission", "submission-123", "--provider", "4"]
+    assert cdsimport.cmd_cds_import(runner, request) == 2
+    assert not any("--operation" in call for call in runner.calls)
+
+
+@pytest.mark.parametrize("extra", [["--status", "run-1"], ["--resume", "run-1"],
+                                   ["--input", "/allowed/new.xml"],
+                                   ["--status-submission", "different"]])
+def test_submission_lookup_rejects_import_and_other_control_options(extra) -> None:
+    with pytest.raises(cdsprotocol.CdsCommandError):
+        cdsprotocol.parse_args(["--status-submission", "submission-123", "--provider", "4", *extra])
