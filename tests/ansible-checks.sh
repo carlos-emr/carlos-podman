@@ -267,6 +267,24 @@ for expected in 'cds.import.enabled=true' 'cds.import.maintenanceMode=true' \
         fail=1
     fi
 done
+
+echo "==> CDS existing-instance initialization preserves operator values"
+mkdir -p "$WORK/cds-conf/carlos"
+cat > "$WORK/cds-conf/carlos/carlos.properties" <<'PROPS'
+# Java-escaped key and alternate separator are valid operator configuration.
+cds\.import\.enabled : false
+cds.import.cliHeapMiB=768
+carlos.flyway.onBoot=off
+PROPS
+cds_vars="{\"carlos_conf_dir\":\"$WORK/cds-conf\",\"carlos_cds_import_enabled\":true}"
+ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" ansible-playbook -i localhost, \
+    -e "$cds_vars" "$ROOT/tests/fixtures/ansible-cds-properties.yml"
+ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" ansible-playbook -i localhost, \
+    -e "$cds_vars" "$ROOT/tests/fixtures/ansible-cds-properties.yml" > "$WORK/cds-idempotent.log"
+if ! grep -Eq 'changed=0[[:space:]]' "$WORK/cds-idempotent.log"; then
+    echo "FAIL: CDS existing-instance initialization was not idempotent"
+    exit 1
+fi
 echo "==> idempotency (second obs-on render must report changed=0 templates)"
 overrides "$WORK/render-on" true
 out="$(ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" \

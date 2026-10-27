@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 CARLOS Contributors
+- name: Read operator-owned properties for missing CDS names
+  ansible.builtin.slurp:
+    src: "{{ carlos_conf_dir }}/carlos/carlos.properties"
+  register: _cds_props_body
+  no_log: true
+
+# Only initialize absent names, including Java-escaped names and alternate
+# separators. Existing values remain operator-owned after the first render.
+- name: Initialize missing CDS import properties on existing instances
+  ansible.builtin.lineinfile:
+    path: "{{ carlos_conf_dir }}/carlos/carlos.properties"
+    line: "{{ item.key }}={{ item.value }}"
+    insertafter: EOF
+  loop:
+    - {key: cds.import.enabled, value: "{{ carlos_cds_import_enabled | bool | lower }}"}
+    - {key: cds.import.maintenanceMode, value: "{{ carlos_cds_import_maintenance_mode | bool | lower }}"}
+    - {key: cds.import.maintenanceGuardEnabled, value: "{{ carlos_cds_import_enabled | bool | lower }}"}
+    - {key: carlos.flyway.onBoot, value: "{{ carlos_cds_import_schema_mode }}"}
+    - {key: cds.import.clinicalZone, value: "{{ carlos_tz }}"}
+    - {key: cds.import.allowedRoot, value: /var/lib/carlos-emr/cds-import/source}
+    - {key: cds.import.stagingRoot, value: /var/lib/carlos-emr/cds-import/state/runs}
+    - {key: cds.import.uploadRoot, value: /var/lib/carlos-emr/cds-import/state/uploads}
+    - {key: cds.import.cliHeapMiB, value: "{{ carlos_cds_import_heap_mib }}"}
+  when:
+    - item.key not in (_cds_props_body.content | default('') | b64decode | java_properties_keys)
+  no_log: true

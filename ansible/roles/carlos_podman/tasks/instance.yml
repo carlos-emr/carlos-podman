@@ -696,6 +696,10 @@
     and ((_carlos_props_body.content | default('') | b64decode)
          is not search('(?m)^\s*encryption\.util\.secret\.key\s*='))
 
+- name: Initialize absent CDS import settings without replacing operator values
+  ansible.builtin.include_tasks: cds_properties.yml
+  when: _carlos_props_stat.stat.exists | default(false)
+
 - name: Render drugref2.properties (once)
   ansible.builtin.template:
     src: drugref2.properties.j2
@@ -1032,6 +1036,12 @@
     - tomcat
     - drugref
 
+- name: Build-context scripts directory
+  ansible.builtin.file:
+    path: "{{ carlos_emr_home }}/build/scripts"
+    state: directory
+    mode: "0755"
+
 - name: Install the build context (Containerfiles + COPY'd confs for `carlos-ctl build`)
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../{{ item }}"
@@ -1052,6 +1062,7 @@
     - conf/tomcat/context.xml
     - conf/drugref/server.xml
     - conf/drugref/drugref2-context.xml
+    - scripts/carlos-cds-import
 
 # --- nftables redirect + log-view filter --------------------------------------------------
 - name: Render the nftables ruleset

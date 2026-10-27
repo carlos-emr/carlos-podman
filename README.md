@@ -1023,6 +1023,13 @@ execution. Stop ordinary application/ingestion writers according to the CARLOS
 maintenance runbook. Root access or selecting a provider key alone is insufficient.
 The command's first step is a bounded, side-effect-free engine capability probe.
 
+The role initializes missing CDS properties on existing instances and preserves
+every existing operator value, including disabled admission. Role variables
+initialize the operator-owned `carlos.properties`; later variable changes do not
+overwrite that file. Edit the effective properties explicitly for the approved
+import window. Missing heap configuration uses Java's 512 MiB default; the role
+also initializes the explicit source, staging and upload roots shown below.
+
 The provisioned host layout is:
 
 | Host path | Container path and policy |

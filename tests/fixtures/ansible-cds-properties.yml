@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 CARLOS Contributors
+- name: Verify append-only CDS property initialization
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Apply the actual role migration
+      ansible.builtin.include_role:
+        name: carlos_podman
+        tasks_from: cds_properties
+
+    - name: Read migrated properties
+      ansible.builtin.slurp:
+        src: "{{ carlos_conf_dir }}/carlos/carlos.properties"
+      register: migrated
+      no_log: true
+
+    - name: Check operator values, absent defaults and unique decoded keys
+      ansible.builtin.assert:
+        that:
+          - "'cds\\\\.import\\\\.enabled : false' in (migrated.content | b64decode)"
+          - "'cds.import.cliHeapMiB=768' in (migrated.content | b64decode)"
+          - "'cds.import.allowedRoot=/var/lib/carlos-emr/cds-import/source' in (migrated.content | b64decode)"
+          - "'carlos.flyway.onBoot=off' in (migrated.content | b64decode)"
+          - "((migrated.content | b64decode | java_properties_keys) | length) == ((migrated.content | b64decode | java_properties_keys | unique) | length)"
+      no_log: true
