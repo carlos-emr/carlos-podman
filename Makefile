@@ -2,10 +2,10 @@
 # Copyright (C) 2026 CARLOS Contributors
 # Dev convenience targets. The production install path is the Ansible role
 # (no pip on the target host); these targets serve a workstation checkout.
-.PHONY: lint type test e2e ansible-checks check db-migrate-int
+.PHONY: lint type test e2e ansible-checks check db-migrate-int cds-launcher-int
 
 lint:
-	ruff check carlos_ctl tests/unit
+	ruff check carlos_ctl tests/unit tests/cds-launcher-boundary.py
 
 type:
 	mypy carlos_ctl
@@ -24,5 +24,9 @@ ansible-checks:
 # hosts/CI only, so it is a separate target, not part of check.
 db-migrate-int:
 	sudo tests/db-migrate-integration.sh
+
+# Real OCI runtime boundary, synthetic Java probe; no DB/clinical deployment.
+cds-launcher-int:
+	python3 tests/cds-launcher-boundary.py
 
 check: lint type test e2e ansible-checks

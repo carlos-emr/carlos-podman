@@ -1,0 +1,44 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 CARLOS Contributors
+# Image-owned one-shot adapter. Only attestation publication runs as namespace
+# root; the CARLOS main always runs as the same non-root UID as the web app.
+set -eu
+CDS_MAIN=io.github.carlos_emr.carlos.demographic.cdsimport.CdsImport
+CDS_CP='/usr/local/tomcat/webapps/carlos/WEB-INF/classes:/usr/local/tomcat/webapps/carlos/WEB-INF/lib/*:/usr/local/tomcat/lib/*'
+unset JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS CLASSPATH CATALINA_OPTS
+export CARLOS_CDS_PROPERTIES=/run/carlos-config/carlos.properties
+export TMPDIR=/carlos-tmp
+if [ "${1:-}" = '--capabilities' ]; then
+    [ "$#" -eq 1 ] || exit 1
+    [ "$(id -u)" = 10001 ] || exit 3
+    exec java -Xmx128m -Djava.awt.headless=true -Djava.io.tmpdir=/carlos-tmp \
+        -cp "$CDS_CP" "$CDS_MAIN" --capabilities
+fi
+[ "$(id -u)" = 0 ] || exit 3
+[ "$#" -ge 2 ] || exit 1
+CDS_NONCE=$1
+shift
+printf '%s\n' "$CDS_NONCE" | LC_ALL=C grep -Eq '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$' || exit 1
+case "${CARLOS_CDS_HEAP_MIB:-}" in
+    ''|*[!0-9]*) exit 2 ;;
+esac
+[ "$CARLOS_CDS_HEAP_MIB" -ge 128 ] && [ "$CARLOS_CDS_HEAP_MIB" -le 16384 ] || exit 2
+CDS_TICKET=/run/carlos-cds-delegations/$CDS_NONCE.json
+umask 027
+# A private per-container tmpfs and exclusive creation prevent cross-run reuse.
+set -C
+exec 3>"$CDS_TICKET"
+set +C
+dd bs=65537 count=1 iflag=fullblock status=none >&3
+exec 3>&-
+[ "$(stat -c %s "$CDS_TICKET")" -le 65536 ] || exit 2
+chown 0:10001 "$CDS_TICKET"
+chmod 0640 "$CDS_TICKET"
+export CARLOS_CDS_DELEGATION_TICKET=$CDS_TICKET
+# Container removal retires only this namespace's tmpfs ticket. No source,
+# document, staging or database data is deleted by the launcher.
+exec setpriv --reuid=10001 --regid=10001 --clear-groups --bounding-set=-all \
+    --inh-caps=-all --ambient-caps=-all --no-new-privs \
+    java "-Xmx${CARLOS_CDS_HEAP_MIB}m" -Djava.awt.headless=true \
+    -Djava.io.tmpdir=/carlos-tmp -cp "$CDS_CP" "$CDS_MAIN" "$@"

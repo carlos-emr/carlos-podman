@@ -79,7 +79,7 @@ mkdir -p "$WORK/plays"
 cp "$render_play" "$WORK/plays/render.yml"
 ln -s "$ROOT/ansible/roles" "$WORK/plays/../roles" 2>/dev/null || true
 
-overrides() {  # overrides <outdir> <obs> — write the extra-vars file
+overrides() {  # overrides <outdir> <obs> [cds-enabled] — write the extra-vars file
     cat > "$WORK/overrides.json" <<OVR
 {
   "carlos_out": "$1",
@@ -94,14 +94,16 @@ overrides() {  # overrides <outdir> <obs> — write the extra-vars file
   "carlos_obs_http_password_effective": "render-obs-pw",
   "carlos_pin_encrypted_effective": "yes",
   "carlos_tomcat_keystore_password": "render-ks",
-  "carlos_tomcat_truststore_password": "render-ts"
+  "carlos_tomcat_truststore_password": "render-ts",
+  "carlos_cds_import_enabled": ${3:-false},
+  "carlos_cds_import_maintenance_mode": ${3:-false}
 }
 OVR
 }
 
-run_render() {  # run_render <outdir> <obs>
+run_render() {  # run_render <outdir> <obs> [cds-enabled]
     mkdir -p "$1"
-    overrides "$1" "$2"
+    overrides "$1" "$2" "${3:-false}"
     ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" \
         ansible-playbook -i localhost, -e "@$WORK/overrides.json" "$WORK/plays/render.yml"
 }
@@ -255,6 +257,34 @@ echo "==> render (obs enabled)"
 run_render "$WORK/render-on" true
 echo "==> render (obs disabled)"
 run_render "$WORK/render-off" false
+echo "==> CDS opt-in render enables the native guard and validation-only schema gate"
+run_render "$WORK/render-cds" false true
+for expected in 'cds.import.enabled=true' 'cds.import.maintenanceMode=true' \
+    'cds.import.maintenanceGuardEnabled=true' 'carlos.flyway.onBoot=validate' \
+    'cds.import.clinicalZone=America/Toronto'; do
+    if ! grep -Fxq "$expected" "$WORK/render-cds/carlos.properties"; then
+        echo "FAIL: CDS opt-in render is missing its required safe execution setting"
+        fail=1
+    fi
+done
+
+echo "==> CDS existing-instance initialization preserves operator values"
+mkdir -p "$WORK/cds-conf/carlos"
+cat > "$WORK/cds-conf/carlos/carlos.properties" <<'PROPS'
+# Java-escaped key and alternate separator are valid operator configuration.
+cds\.import\.enabled : false
+cds.import.cliHeapMiB=768
+carlos.flyway.onBoot=off
+PROPS
+cds_vars="{\"carlos_conf_dir\":\"$WORK/cds-conf\",\"carlos_cds_import_enabled\":true}"
+ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" ansible-playbook -i localhost, \
+    -e "$cds_vars" "$ROOT/tests/fixtures/ansible-cds-properties.yml"
+ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" ansible-playbook -i localhost, \
+    -e "$cds_vars" "$ROOT/tests/fixtures/ansible-cds-properties.yml" > "$WORK/cds-idempotent.log"
+if ! grep -Eq 'changed=0[[:space:]]' "$WORK/cds-idempotent.log"; then
+    echo "FAIL: CDS existing-instance initialization was not idempotent"
+    exit 1
+fi
 echo "==> idempotency (second obs-on render must report changed=0 templates)"
 overrides "$WORK/render-on" true
 out="$(ANSIBLE_ROLES_PATH="$ROOT/ansible/roles" \

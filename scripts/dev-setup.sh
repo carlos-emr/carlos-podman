@@ -126,6 +126,8 @@ mkdir -p "$EMR_HOME/container/conf/tomcat" \
          "$EMR_HOME/data/mariadb-mnt" \
          "$EMR_HOME/data/mariadb-binlog" \
          "$EMR_HOME/data/CarlosDocument/carlos/document" \
+         "$EMR_HOME/data/cds-import/source" \
+         "$EMR_HOME/data/cds-import/state" \
          "$EMR_HOME/logs/carlos" \
          "$EMR_HOME/backup/mariadb-hot" \
          "$EMR_HOME/run/db-socket" \
@@ -182,6 +184,13 @@ values = {
     "eform_pdf_browser_startup_check": "off",
     "eform_pdf_browser_chromium_path": "",
     "eform_pdf_browser_chromedriver_path": "",
+    # Shared import stays opt-in even in a development render. The production
+    # role provides the source/state mounts and explicit delegation registry.
+    "cds_import_enabled": "false",
+    "cds_import_maintenance_mode": "false",
+    "cds_import_heap_mib": "512",
+    "cds_import_schema_mode": "off",
+    "tz": "America/Toronto",
     "buildtag": "carlos-podman",
 }
 

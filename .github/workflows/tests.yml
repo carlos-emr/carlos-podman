@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
-# CI for carlos-podman (five jobs):
+# CI for carlos-podman:
 #   - python: lint + types + unit tests for the carlos_ctl CLI (3.9 = the
 #     EL9 production floor pyproject declares, + a current interpreter)
 #   - e2e: the hermetic suite (stubs for podman/systemctl/sops/…; nothing
@@ -54,7 +54,7 @@ jobs:
           "pytest==8.4.2; python_version < '3.10'"
           PyYAML==6.0.1 bcrypt==5.0.0 types-PyYAML
       - name: ruff
-        run: ruff check carlos_ctl tests/unit
+        run: ruff check carlos_ctl tests/unit tests/cds-launcher-boundary.py
       - name: mypy
         run: mypy carlos_ctl
       - name: pytest (unit)
@@ -67,16 +67,27 @@ jobs:
       - name: bash syntax (harness + stubs)
         run: |
           bash -n tests/run-tests.sh tests/ansible-checks.sh tests/db-migrate-integration.sh
+          sh -n scripts/carlos-cds-import
           for f in tests/stubs/*; do bash -n "$f"; done
       - name: shellcheck (enforcing)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck -S warning tests/run-tests.sh tests/ansible-checks.sh \
-            tests/db-migrate-integration.sh tests/stubs/*
+            tests/db-migrate-integration.sh tests/stubs/* scripts/carlos-cds-import
       - name: python deps for the CLI under test
         run: sudo apt-get install -y -qq python3-yaml python3-bcrypt
       - name: hermetic e2e suite
         run: sudo tests/run-tests.sh
+
+  cds-launcher-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      # Same digest-pinned Java25 runtime and image-owned launcher, with a
+      # synthetic Java probe replacing the WAR main. No DB/clinical data.
+      # Paired real-engine acceptance is a separate release gate.
+      - name: verify CDS namespace-root to service-user boundary
+        run: python3 tests/cds-launcher-boundary.py
 
   # Issue #17: the hermetic e2e suite pins db-migrate's argv/stdin contract;
   # this job proves the collation semantics on a REAL MariaDB 11.4+ server —

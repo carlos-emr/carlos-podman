@@ -1233,3 +1233,22 @@ WAF_RATE_LIMIT_CLEANUP_INTERVAL_SECONDS=300
 # ResponseSanitizationFilter is disabled. NEVER enable with real patient data.
 # Requires Tomcat restart to take effect.
 # DISPLAY_ERROR=true
+
+# CDS web/CLI shared engine: admission remains off until reviewed deployment,
+# clinical normalization, recovery and performance gates have passed.
+cds.import.enabled={{ carlos_cds_import_enabled | bool | lower }}
+cds.import.maintenanceMode={{ carlos_cds_import_maintenance_mode | bool | lower }}
+cds.import.maintenanceGuardEnabled={{ carlos_cds_import_enabled | bool | lower }}
+carlos.flyway.onBoot={{ carlos_cds_import_schema_mode }}
+cds.import.clinicalZone={{ carlos_tz }}
+cds.import.allowedRoot=/var/lib/carlos-emr/cds-import/source
+cds.import.stagingRoot=/var/lib/carlos-emr/cds-import/state/runs
+cds.import.uploadRoot=/var/lib/carlos-emr/cds-import/state/uploads
+cds.import.cliHeapMiB={{ carlos_cds_import_heap_mib }}
+# No source or operator is approved by default. Configure explicit mappings;
+# enabling import or running the administration CLI as root does not grant them.
+#cds.import.sourceNamespaces=approved-source
+#cds.import.source.approved-source.profiles=pcon-2024-02,omd-5.2
+#cds.import.operator.operator-name.providers=999998
+#cds.import.operator.operator-name.programs=1
+#cds.import.operator.operator-name.facilities=1
