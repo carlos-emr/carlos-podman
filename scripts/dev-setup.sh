@@ -186,7 +186,7 @@ values = {
     # role provides the source/state mounts and explicit delegation registry.
     "cds_import_enabled": "false",
     "cds_import_maintenance_mode": "false",
-    "cds_import_cli_heap_mib": "512",
+    "cds_import_heap_mib": "512",
     "buildtag": "carlos-podman",
 }
 
