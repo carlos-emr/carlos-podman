@@ -20,4 +20,4 @@ this project is named carlos-podman-ctl in pyproject.toml to keep the two
 unambiguous; unifying them is a separate, later issue.
 """
 
-__version__ = "2.0.0-beta2"
+__version__ = "2.0.0-beta3"

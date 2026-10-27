@@ -44,6 +44,8 @@ make check            # the hermetic battery: ruff + mypy + pytest +
                       # tests/run-tests.sh (hermetic e2e; CI runs it under sudo) + ansible-checks
 make db-migrate-int   # NON-hermetic: real MariaDB via podman — disposable
                       # hosts only; refuses to run beside a live deployment
+make cds-launcher-int # Docker + digest-pinned Java25 runtime; synthetic
+                      # privilege/mount/attestation gate, no DB or clinical data
 ```
 
 The [Tests section](README.md#tests) of the project guide explains what each

@@ -691,6 +691,11 @@ class Settings:
     # -- accessors ---------------------------------------------------------
 
     @property
+    def cds_state_dir(self) -> Path:
+        """Accepted import snapshots/spools/results, shared by web and one-shot CLI."""
+        return self.data_dir / "cds-import" / "state"
+
+    @property
     def document_store(self) -> Path:
         """Host path of the patient document store. CarlosDocument replaced
         the inherited OscarDocument default; until the playbook's one-time

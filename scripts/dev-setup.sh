@@ -182,6 +182,11 @@ values = {
     "eform_pdf_browser_startup_check": "off",
     "eform_pdf_browser_chromium_path": "",
     "eform_pdf_browser_chromedriver_path": "",
+    # Shared import stays opt-in even in a development render. The production
+    # role provides the source/state mounts and explicit delegation registry.
+    "cds_import_enabled": "false",
+    "cds_import_maintenance_mode": "false",
+    "cds_import_cli_heap_mib": "512",
     "buildtag": "carlos-podman",
 }
 

@@ -119,6 +119,8 @@
     - {path: "{{ carlos_conf_dir }}/waf"}
     - {path: "{{ carlos_data_dir }}", owner: "{{ carlos_service_user }}",
        group: "{{ carlos_service_user }}", mode: "0750"}
+    - {path: "{{ carlos_data_dir }}/cds-import", owner: "{{ carlos_service_user }}",
+       group: "{{ carlos_service_user }}", mode: "0750"}
     - {path: "{{ carlos_emr_home }}/logs", owner: "{{ carlos_service_user }}",
        group: "{{ carlos_service_user }}", mode: "0750"}
     - {path: "{{ carlos_emr_home }}/metrics", owner: "{{ carlos_service_user }}",
@@ -287,6 +289,38 @@
     path: "{{ carlos_data_dir }}/CarlosDocument"
     state: directory
     mode: "0700"
+
+# CDS roots acquire container UID/group ownership at the init boundary. Never
+# reset existing roots to host ownership on a role re-run beneath a live worker.
+- name: Inspect persistent CDS source and state roots without following links
+  ansible.builtin.stat:
+    path: "{{ carlos_data_dir }}/cds-import/{{ item.name }}"
+    follow: false
+  loop:
+    - {name: source, mode: "0750"}
+    - {name: state, mode: "0700"}
+  register: carlos_cds_root_status
+
+- name: Require existing CDS roots to be real directories
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir and not item.stat.islnk)
+    fail_msg: "CDS source/state roots must be real directories; refusing to change a linked path."
+  loop: "{{ carlos_cds_root_status.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Initialize only missing CDS roots before their first container start
+  ansible.builtin.file:
+    path: "{{ carlos_data_dir }}/cds-import/{{ item.item.name }}"
+    state: directory
+    owner: "{{ carlos_service_user }}"
+    group: "{{ carlos_service_user }}"
+    mode: "{{ item.item.mode }}"
+  when: not item.stat.exists
+  loop: "{{ carlos_cds_root_status.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
 
 # --- run-secrets tmpfs + persistence ------------------------------------------------
 - name: Sealed-fragment landing zone (/run tmpfs, service-user-owned 0700)

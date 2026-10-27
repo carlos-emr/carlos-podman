@@ -95,6 +95,12 @@ carlos_vmalert_port: 8880
 #   skopeo inspect --format '{{ "{{" }}.Digest{{ "}}" }}' docker://<repo>:<tag>) --
 carlos_image: localhost/carlos-app:latest
 carlos_drugref_image: localhost/carlos-drugref:latest
+# CDS execution stays disabled until the application/import release gates and
+# approved operator/source registry are configured. The source mount is read-only;
+# accepted snapshots/jobs live on the separate persistent state mount.
+carlos_cds_import_enabled: false
+carlos_cds_import_maintenance_mode: false
+carlos_cds_import_heap_mib: 512
 carlos_db_image: "docker.io/library/mariadb:11.4.12@sha256:a794d9eb009e20de605858a11f32f63b4075cbd197c650436f0e3b457e4caed7"
 carlos_victorialogs_image: "docker.io/victoriametrics/victoria-logs:v1.51.0@sha256:e16dd33a95623cc21730cf5285344ed9f97419eeaff7d24b039c135beb85ee7e"
 # DEBIAN variant on purpose: Vector's journald source shells out to

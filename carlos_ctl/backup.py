@@ -518,6 +518,9 @@ class BackupContext:
         stdout: Optional[IO[bytes]] = None,
         capture: bool = False, quiet: bool = False,
     ) -> subprocess.CompletedProcess:
+        state_paths = self.cds_state_paths()
+        state_mount = (["-v", f"{self.s.cds_state_dir}:/backup/cds-import-state:ro"]
+                       if state_paths else [])
         return self.runner.podman_user(
             [
                 "run", "--rm", "-i", "--pull=missing", "--hostname", self.snapshot_host,
@@ -527,12 +530,25 @@ class BackupContext:
                 "-v", f"{self.s.document_store}:/backup/CarlosDocument:ro",
                 "-v", f"{self.s.emr_home}/container:/backup/container:ro",
                 "-v", f"{self.binlog_dir}:/backup/binlog:ro",
+                *state_mount,
                 *self.repo_mount,
                 *self.extra_mount,
                 self.restic_image, *args,
             ],
             stdin=stdin, stdout=stdout, capture=capture, quiet=quiet,
         )
+
+    def cds_state_paths(self) -> List[str]:
+        """Protect accepted snapshots/spools/results alongside DB/documents."""
+        state = self.s.cds_state_dir
+        if state.is_symlink():
+            raise CtlError("CDS import state must be a real directory for backup")
+        if not state.exists():
+            # Older deployments without CDS storage retain their backup contract.
+            return []
+        if not state.is_dir():
+            raise CtlError("CDS import state backup storage is not a directory")
+        return ["/backup/cds-import-state"]
 
     def db_exec(
         self, args: List[str], *, input_text: Optional[str] = None,
@@ -1003,7 +1019,7 @@ def cmd_backup(runner: Runner, args: List[str]) -> int:
             # Deliberately db-free — documents keep shipping even while the
             # db (or the whole pod) is down.
             log("Snapshotting the document store")
-            if ctx.run_restic(["backup", "/backup/CarlosDocument",
+            if ctx.run_restic(["backup", "/backup/CarlosDocument", *ctx.cds_state_paths(),
                                "--tag", "docs"]).returncode != 0:
                 return 1
             # Stamp success only for a NON-EMPTY store; exit 0 either way — a
@@ -1280,7 +1296,8 @@ def _full_backup(ctx: BackupContext) -> bool:
     # superseded plaintext conf/restic, and rolling *.bak are excluded.
     log("Backing up documents and configuration")
     if ctx.run_restic([
-        "backup", "/backup/CarlosDocument", "/backup/container", "--tag", "files",
+        "backup", "/backup/CarlosDocument", "/backup/container", *ctx.cds_state_paths(),
+        "--tag", "files",
         "--exclude", "/backup/container/conf/restic",
         "--exclude", "/backup/container/carlos-app.env",
         "--exclude", "/backup/container/*.sh",

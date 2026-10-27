@@ -2,8 +2,7 @@
 # Copyright (C) 2026 CARLOS Contributors
 # CARLOS EMR application image: builds the WAR from source — or, in WAR mode
 # (CARLOS_WAR_STAGE=download, see below), downloads a published release WAR —
-# and packages it on Tomcat 11 / JDK 21 (the stack the carlos-emr/carlos
-# devcontainer targets).
+# and packages it on Tomcat 11 / JDK 25, matching the CARLOS release runtime.
 #
 #   podman build --no-cache -t localhost/carlos-app:latest -f Containerfile .
 #   (--no-cache matters: see REPRODUCIBILITY below — a cached ADD ships stale code)
@@ -21,7 +20,7 @@
 # on non-SHA refs). The base images below are pinned tag@digest so a re-pushed
 # tag can never change what a PHI image is built from — to bump, pick the new
 # tag and re-resolve its multi-arch digest (skopeo inspect --format
-# '{{.Digest}}' docker://<repo>:<tag>). Digests resolved 2026-07.
+# '{{.Digest}}' docker://<repo>:<tag>). CARLOS Java 25 digests resolved 2026-10-27.
 ARG CARLOS_REF=main
 # WAR-artifact mode: when a GitHub release publishes a prebuilt WAR
 # (carlos-<tag>.war), `carlos-ctl build` selects the `download` stage below
@@ -44,7 +43,7 @@ ARG CARLOS_WAR_STAGE=build
 # lines unless redeclared per stage.
 ARG SOURCE_DATE_EPOCH=""
 
-FROM docker.io/library/maven:3.9-eclipse-temurin-21@sha256:2b4496088e7b80ae10a8c9f74e574ea21380325a006ec684532ad6bad5bc7273 AS build
+FROM docker.io/library/maven:3.9-eclipse-temurin-25@sha256:93b8a14ea2f412782e4e842651273b4d903e35cc496284f178fbbe2d67d00976 AS build
 ARG CARLOS_REF
 ARG SOURCE_DATE_EPOCH=""
 # Exported as ENV so Maven/plugins that honor SOURCE_DATE_EPOCH see it; TZ
@@ -156,7 +155,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 # MANDATORY: a URL-fetched WAR is only trustworthy content-addressed
 # (`carlos-ctl build` passes the sha from the pinned release; a manual build
 # must pass CARLOS_WAR_SHA256 explicitly or this stage fails).
-FROM docker.io/library/tomcat:11.0-jdk21-temurin@sha256:f29ace5eff7f2787a8ecc0ec79d61423e6129bcc8ee31eda9a8caa945796fb37 AS download
+FROM docker.io/library/tomcat:11.0-jdk25-temurin@sha256:fc6089642155a7cdad0cf118cf1fcca74a2f89e90169bdf913b2e38e603c0b47 AS download
 ARG CARLOS_WAR_URL
 ARG CARLOS_WAR_SHA256
 ADD ${CARLOS_WAR_URL} /carlos.war
@@ -167,7 +166,7 @@ RUN test -n "$CARLOS_WAR_SHA256" \
 # stage name whichever path produced /carlos.war.
 FROM ${CARLOS_WAR_STAGE} AS warsrc
 
-FROM docker.io/library/tomcat:11.0-jdk21-temurin@sha256:f29ace5eff7f2787a8ecc0ec79d61423e6129bcc8ee31eda9a8caa945796fb37
+FROM docker.io/library/tomcat:11.0-jdk25-temurin@sha256:fc6089642155a7cdad0cf118cf1fcca74a2f89e90169bdf913b2e38e603c0b47
 ENV TZ=UTC
 # Drop the stock webapps; serve CARLOS at /carlos and redirect / there.
 RUN rm -rf /usr/local/tomcat/webapps/* \
@@ -228,8 +227,12 @@ RUN groupadd -g 10001 carlos \
     # binary), so pin the real MariaDB client here. The container still runs
     # non-root / read-only-root / drop-ALL.
     && apt-get update \
-    && apt-get install -y --no-install-recommends tini mariadb-client-core \
+    && apt-get install -y --no-install-recommends tini mariadb-client-core util-linux \
+    && mkdir -p /run/carlos-cds-delegations \
+    && chown 0:10001 /run/carlos-cds-delegations \
+    && chmod 0750 /run/carlos-cds-delegations \
     && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0755 scripts/carlos-cds-import /usr/local/bin/carlos-cds-import
 USER 10001
 # Baseline JVM options so the image works standalone; the pod spec overrides
 # CATALINA_OPTS with production heap sizes (and must keep these flags).

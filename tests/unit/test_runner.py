@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import inspect
 import os
+import signal
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -47,6 +51,98 @@ class TestRunTimeout:
         runner = Runner(mk_settings())
         cp = runner.run(["sleep", "0.3"])
         assert cp.returncode == 0
+
+
+class TestBoundedProtocolCapture:
+    @pytest.mark.parametrize("stream", ["stdout", "stderr"])
+    def test_oversized_pipe_is_terminated_without_unbounded_capture(
+        self, mk_settings, stream: str,
+    ) -> None:
+        runner = Runner(mk_settings())
+        program = f"import sys; sys.{stream}.write('x'*1000000)"
+        cp = runner.run([sys.executable, "-c", program], capture=True,
+                        capture_limit=65536, timeout=5)
+        assert cp.returncode == 125
+        assert cp.stdout == ""
+        assert cp.stderr == "protocol limit"
+
+    def test_protocol_hang_terminates_at_deadline(self, mk_settings) -> None:
+        runner = Runner(mk_settings())
+        started = time.monotonic()
+        cp = runner.run([sys.executable, "-c", "import time; time.sleep(30)"],
+                        capture=True, capture_limit=65536, timeout=.1)
+        assert cp.returncode == 124
+        assert time.monotonic() - started < 5
+
+    def test_valid_utf8_and_exit_code_are_preserved(self, mk_settings) -> None:
+        runner = Runner(mk_settings())
+        cp = runner.run([sys.executable, "-c", "import sys; print('é'); sys.exit(4)"],
+                        capture=True, capture_limit=65536, timeout=5)
+        assert cp.returncode == 4
+        assert cp.stdout == "é\n"
+
+    def test_invalid_encoding_is_not_a_valid_protocol(self, mk_settings) -> None:
+        runner = Runner(mk_settings())
+        cp = runner.run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff')"],
+                        capture=True, capture_limit=65536, timeout=5)
+        assert cp.returncode == 125
+        assert cp.stderr == "invalid protocol encoding"
+
+    def test_checked_bounded_failure_raises_ctlerror(self, mk_settings) -> None:
+        runner = Runner(mk_settings())
+        with pytest.raises(CtlError):
+            runner.run(["false"], capture=True, capture_limit=65536, timeout=5, check=True)
+
+    def test_missing_capture_or_deadline_cannot_enable_an_unbounded_probe(
+        self, mk_settings,
+    ) -> None:
+        runner = Runner(mk_settings())
+        with pytest.raises(CtlError):
+            runner.run(["true"], capture_limit=65536)
+
+
+class TestSupervisedControl:
+    def test_small_control_input_streams_and_preserves_nonzero_outcome(
+        self, mk_settings, capfd,
+    ) -> None:
+        runner = Runner(mk_settings())
+        program = "import sys,json; assert json.loads(sys.stdin.read())['protocol']==1; " \
+                  "print('safe durable receipt'); sys.exit(4)"
+        cp = runner.run([sys.executable, "-c", program], input_text='{"protocol":1}',
+                        supervise=True)
+        assert cp.returncode == 4
+        assert cp.stdout is None
+        assert capfd.readouterr().out == "safe durable receipt\n"
+
+    def test_large_control_payload_is_not_accepted_as_an_import_stream(self, mk_settings) -> None:
+        runner = Runner(mk_settings())
+        with pytest.raises(CtlError, match="control input"):
+            runner.run(["true"], input_text="x" * 4097, supervise=True)
+
+    def test_termination_signal_reaches_child_and_is_nonzero(
+        self, tmp_path,
+    ) -> None:
+        ready = tmp_path / "engine-ready"
+        child = ("import pathlib,time; pathlib.Path(" + repr(str(ready))
+                 + ").touch(); time.sleep(30)")
+        wrapper = (
+            "import sys; from carlos_ctl.runner import Runner; "
+            "from carlos_ctl.config import Settings; "
+            "r=Runner(Settings({'EMR_HOME':" + repr(str(tmp_path)) + "})); "
+            "sys.exit(r.run([sys.executable,'-c'," + repr(child) + "],supervise=True).returncode)"
+        )
+        process = subprocess.Popen([sys.executable, "-c", wrapper])
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert ready.exists()
+            process.send_signal(signal.SIGTERM)
+            assert process.wait(timeout=5) == 128 + signal.SIGTERM
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
 
 
 class TestCrossUserCwd:

@@ -60,7 +60,7 @@ journal via Podman's journald driver):
 
 | Container | Image | Role |
 | --- | --- | --- |
-| `carlos` | `localhost/carlos-app` (built here) | CARLOS on Tomcat 11 / JDK 21, context path `/carlos` |
+| `carlos` | `localhost/carlos-app` (built here) | CARLOS on Tomcat 11 / JDK 25, context path `/carlos` |
 | `drugref` | `localhost/carlos-drugref` (built here) | DrugRef2026 drug/interaction lookups, Tomcat on `127.0.0.1:8180` |
 | `db` | `mariadb` (official) | MariaDB, reuses the existing datadir; binds in-pod loopback only — host admin via the unix socket at `$EMR_HOME/run/db-socket` or `podman exec` |
 | `mysqld-exporter` | `quay.io/prometheus/mysqld-exporter` | *obs-profile-gated* — MariaDB metrics on pod loopback `:9104` (least-priv `exporter` account; runs non-root); not rendered when `carlos_obs_enabled: false` |
@@ -95,7 +95,7 @@ Files:
   `down [--disable]` / `enable` (app lifecycle); `status` / `logs` / `check`
   / `backup <full|binlogs|docs|verify|status|restore>` / `monitor` /
   `alert-test` / `cert-renew` (operations); `db` /
-  `db-migrate [--db <database>]` / `db-dump` / `db-backup` /
+  `db-migrate [--db <database>]` / `db-dump` / `db-backup` / `cds-import` /
   `pma [--ttl <min>]` (break-glass); `db-users` / `seal` /
   `rotate <db|db-root|log-view|obs|age-key|restic>` (security);
   `--instance <name>` / `instances [--prune]` / `uninstall` / `setup`
@@ -115,7 +115,7 @@ Files:
   GitHub — or, when the pinned release publishes one, downloads the release's
   WAR asset instead (sha256-verified `download` stage, selected by
   `carlos-ctl build` via `CARLOS_WAR_STAGE=download`) — and bakes it into
-  `tomcat:11.0-jdk21-temurin`
+  `tomcat:11.0-jdk25-temurin`
 - `Containerfile.drugref` — same pattern for DrugRef2026 (`drugref2.war`),
   including the release-WAR `download` stage; mirrors the upstream
   devcontainer's drugref service
@@ -1000,12 +1000,104 @@ twins referenced above are `bc/V1.0.1__bc_schema.sql`,
 `bc/V1.0.6__restore_live_legacy_bc_tables_and_reference_data.sql`; the
 upstream migration README stays authoritative for both provinces.
 
+## CDS patient-data import
+
+`carlos-ctl cds-import` runs the same durable Java engine as CARLOS's existing
+Administration → Data Management → Demographic Import browser workflow. Web
+import remains supported. The command uses a one-shot container from the exact
+deployed application image ID, with its effective assembled configuration,
+document store and persistent import state. It does not require the Tomcat
+process to be running, but the prepared application container/volumes and DB pod
+must exist. No floating replacement image is pulled for a clinical import.
+
+Run the updated provisioning role and image build first. The CARLOS image now
+uses digest-pinned Tomcat 11 / Java 25; an old Java 21 image fails the capability
+gate. Admission is off by default. Configure and review `cds.import.enabled`,
+the supported maintenance window, approved source profiles/namespace and
+explicit OS-operator/provider delegation in `carlos.properties` before clinical
+execution. Root access or selecting a provider number alone is insufficient.
+The command's first step is a bounded, side-effect-free engine capability probe.
+
+The provisioned host layout is:
+
+| Host path | Container path and policy |
+|---|---|
+| `$EMR_HOME/data/cds-import/source` | `/var/lib/carlos-emr/cds-import/source`, read-only; original source contents are never rewritten, moved or recursively chowned |
+| `$EMR_HOME/data/cds-import/state` | `/var/lib/carlos-emr/cds-import/state`, persistent private UID10001 state; accepted snapshots, spools, checkpoints/results and browser upload state survive replacement |
+
+Place approved source copies beneath that instance's source root, with read
+access for container UID/GID 10001. Preserve the external originals. The CLI
+rejects outside-root and linked input paths and does not silently change source
+ownership or permissions. For a protected root-owned archive, an administrator
+can stream a copy through the rootless namespace using the provisioned service
+account (example from a root shell; substitute the actual instance paths):
+
+```bash
+runuser -u carlos -- env XDG_RUNTIME_DIR=/run/user/$(id -u carlos) \
+  podman unshare install -m0640 -o0 -g10001 /dev/stdin \
+  /usr/local/emr/data/cds-import/source/batch.zip < /approved-originals/batch.zip
+```
+
+Start with a dry run and inspect its protected reports:
+
+```bash
+sudo carlos-ctl cds-import --input /usr/local/emr/data/cds-import/source/batch.zip \
+  --provider 999998 --source-namespace approved-source --source-profile omd-5.2 \
+  --program 1 --facility 1 --dry-run
+```
+
+Remove `--dry-run` only after resolving preflight findings and acquiring the
+approved drained migration window. `--merge-existing` is an explicit opt-in;
+the default refuses duplicate charts. `--no-match-providers` preserves source
+provider identities without name matching. `--synthetic`, `--course ID` and
+`--timeshift DAYS` cover authorized synthetic/anonymized training workflows;
+course/nonzero shift require synthetic mode, which cannot merge real charts.
+
+Use `--status RUN_ID`, `--resume RUN_ID`, `--cancel RUN_ID` or `--report RUN_ID`,
+always with `--provider NUMBER`, for an existing durable run. These operations
+cannot replace its source/options. Status, reports and cancellation remain
+available while an import owns the cross-verb deployment/rotation lock. Source,
+normalization, identity, resource admission and checkpoint semantics are shared
+with web/host CLI; no clinical policy is reimplemented in the wrapper.
+
+The one-shot launcher prepares a bounded expiring attestation as namespace root,
+then drops to UID/GID 10001 with all capabilities removed before Java starts.
+CARLOS independently verifies attestation ownership/permissions, exact argument
+digest, expiry and the explicit operator/provider delegation. The effective
+config/source mounts are checked read-only before the container starts; state
+and document mounts remain persistent. No credential is passed on argv.
+The 128 MiB capability probe reads the launch heap through Java's actual
+production properties loader (`cds.import.cliHeapMiB`, default 512 MiB, range 128–16384 MiB).
+The import container has an explicit heap-plus-overhead memory limit. This does
+not replace the engine's shared admission or demonstrate large-data capacity:
+parsing, payloads, transactions and reporting must remain bounded and measured.
+
+Foreground output streams without batch capture. Durable per-patient/category
+receipts and protected event/error/completeness files distinguish newly
+committed, no-op, refused, failed, not-started, partial and uncertain work.
+Exit 0 means a clean complete import, verified no-op or valid dry run; for
+status/report it means the query succeeded, not that its recorded run completed.
+Exit 1 is arguments, 2 configuration/runtime/protocol, 3 authorization, and 4
+refused/busy/failed/partial/uncertain/incomplete. Signals use conventional nonzero
+statuses. A failed command may already have committed clinical units: inspect
+the durable run and resume/reconcile it rather than resubmitting the source.
+Cleanup/report delivery failure is separate from clinical commit state.
+
+Full/files and periodic document backups include provisioned CDS state in the
+encrypted repository at `/backup/cds-import-state`. During coordinated restore,
+restore that state to `$EMR_HOME/data/cds-import/state` with the DB and documents,
+preserve UID10001/private permissions, then reconcile accepted jobs against their
+hashes/checkpoints before resuming. A DB-only restore cannot establish that
+source snapshots or attachments are available; never clear holds to hide that
+uncertainty. The wrapper only removes its own one-shot container and private
+attestation tmpfs, never source/state/clinical records.
+
 ## What changed vs. the old openo-app pod
 
 | | openo-app (old) | carlos-app (new) |
 | --- | --- | --- |
 | App image | `localhost/open-o-mc-demo` + `/workspace` source and `.m2` mounts | WAR baked into `localhost/carlos-app` at build time; no source/Maven mounts |
-| Runtime | older Tomcat / JVM with CMS GC flags | Tomcat 11, JDK 21, G1 GC (`-XX:+UseConcMarkSweepGC` etc. no longer exist and would abort the JVM) |
+| Runtime | older Tomcat / JVM with CMS GC flags | Tomcat 11, JDK 25, G1 GC (`-XX:+UseConcMarkSweepGC` etc. no longer exist and would abort the JVM) |
 | Context path | `/oscar` | `/carlos` (`/` redirects) |
 | Properties | `oscar.properties` secret → `/root/oscar.properties` | host file, assembled by an initContainer into a tmpfs `emptyDir` at `/run/carlos-config/carlos.properties` via `-Dcarlos_override_properties` |
 | Documents | `/var/lib/OpenoDocument` | `/var/lib/CarlosDocument` (host dir renamed once by the playbook; compat mount at the old paths) |

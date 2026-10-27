@@ -134,7 +134,7 @@ spec:
     # is pinned by a run-tests.sh assertion; keep it in both init containers.
     - name: carlos-init
       image: "{{ carlos_image }}"
-      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment - the secrets service failed to render (TPM/Secure-Boot change?); refusing to start on a broken credential' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/CarlosDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp"]
+      command: ["bash", "-c", "set -e; umask 077; { cat /config-base/carlos.properties; cat /run/app-secrets/carlos-db.properties 2>/dev/null || true; } >/run/carlos-config/carlos.properties; chown 10001:10001 /run/carlos-config/carlos.properties; if [ \"$(grep '^db_password=' /run/carlos-config/carlos.properties | tail -1)\" = 'db_password=__SEALED__' ]; then echo 'FATAL: db_password is __SEALED__ with no unsealed fragment - the secrets service failed to render (TPM/Secure-Boot change?); refusing to start on a broken credential' >&2; exit 1; fi; for d in /usr/local/tomcat/logs /var/lib/CarlosDocument; do [ $(stat -c %u $d) = 10001 ] || chown -R 10001:10001 $d; done; chown 10001:10001 /tomcat-work /tomcat-temp /tomcat-tmp; chown 0:10001 /cds-source; chmod 0750 /cds-source; chown 0:0 /cds-state; chmod 0700 /cds-state; chown 10001:10001 /cds-state"]
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
@@ -162,6 +162,12 @@ spec:
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
           mountPath: /var/lib/CarlosDocument
+        # Only these import-owned directory roots are initialized. Original
+        # source files are never recursively chowned, rewritten or deleted.
+        - name: carlos-cds-source
+          mountPath: /cds-source
+        - name: carlos-cds-state
+          mountPath: /cds-state
         # Fresh emptyDirs each start — chowned so the read-only-root carlos
         # container (uid 10001) can write JSP-compile output and temp files.
         - name: carlos-work
@@ -622,7 +628,7 @@ spec:
         - name: drugref-tmp
           mountPath: /drugref-tmp
 
-    # CARLOS webapp on Tomcat 11 / JDK 21. The WAR is baked into the image
+    # CARLOS webapp on Tomcat 11 / JDK 25. The WAR is baked into the image
     # (see Containerfile). Context path is /carlos; the image's ROOT app
     # redirects / -> /carlos/. Same base+fragment assembly as drugref;
     # CATALINA_OPTS points carlos_override_properties at the assembled tmpfs
@@ -719,7 +725,7 @@ spec:
           value: "{{ carlos_tz }}"
         - name: LOG_VERBOSITY
           value: "{{ carlos_log_verbosity }}"
-        # JDK 21: G1 is the default collector. carlos_override_properties is how
+        # JDK 25: G1 is the default collector. carlos_override_properties is how
         # CARLOS finds its properties file. GC logging goes to stdout (shipped
         # with everything else); only true diagnostic *artifacts* are files in
         # the mounted logs volume — heap dump + hs_err on crash, and a
@@ -763,6 +769,11 @@ spec:
           mountPath: /usr/local/tomcat/logs
         - name: carlos-documents
           mountPath: /var/lib/CarlosDocument
+        - name: carlos-cds-source
+          mountPath: /var/lib/carlos-emr/cds-import/source
+          readOnly: true
+        - name: carlos-cds-state
+          mountPath: /var/lib/carlos-emr/cds-import/state
         # The SAME volume again at the pre-rename path: absolute paths the
         # application stored in the database before the OscarDocument ->
         # CarlosDocument rename (faxes.filename, emailAttachment.filePath)
@@ -928,4 +939,12 @@ spec:
     - name: carlos-documents
       hostPath:
         path: {{ carlos_emr_home }}/data/CarlosDocument
+        type: Directory
+    - name: carlos-cds-source
+      hostPath:
+        path: {{ carlos_emr_home }}/data/cds-import/source
+        type: Directory
+    - name: carlos-cds-state
+      hostPath:
+        path: {{ carlos_emr_home }}/data/cds-import/state
         type: Directory

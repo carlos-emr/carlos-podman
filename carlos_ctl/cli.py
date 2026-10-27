@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 CARLOS Contributors
 """Verb dispatch. Grouped by lifecycle; each verb states its scope (HOST-wide
-vs THIS instance) and whether it can touch data. NO verb writes to
-$EMR_HOME/data except the explicit db import paths (`db <file`), and
-`uninstall` always preserves data.
+vs THIS instance) and whether it can touch data. Clinical data writes belong
+to explicit database/restore/CDS import paths; `uninstall` always preserves data.
 
 Provisioning (host prep, instance bootstrap, config rendering, drift) is the
 Ansible role's job — see ansible/site.yml and README "Migration from the bash
@@ -18,6 +17,7 @@ import sys
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import lifecycle
+from .cdsprotocol import CdsCommandError
 from .config import Settings, registry_entry, resolve_instance_home
 from .runner import Runner
 from .util import CtlError
@@ -63,6 +63,8 @@ DATA & BREAK-GLASS:
                         (root session pinned to utf8mb4_general_ci; fail-fast)
   db-dump [database...] consistent mariadb-dump to stdout
   db-backup [name]      mariadb-backup physical snapshot (--prepare'd)
+  cds-import [options]  shared-engine CDS XML/ZIP/directory import; --help for
+                        dry run, opt-in merge and durable status/resume/cancel/report
   pma [--ttl <minutes>] on-demand phpMyAdmin on 127.0.0.1:<PMA_PORT> (default 120m ttl)
 
 SECURITY:
@@ -109,6 +111,13 @@ def _gating(verb: str, rest: List[str]) -> Tuple[bool, bool]:
     BANNER (wrong-instance target echo): every state-touching verb — the
     _MUTATING set, all `backup` sub-verbs, and `db` (imports) — so a
     multi-instance operator always sees which instance they hit."""
+    if verb == "cds-import":
+        from .cdsprotocol import parse_args
+
+        options = parse_args(rest)
+        # Progress/reports/cancellation must remain available while the
+        # foreground import owns the cross-verb deployment/rotation lock.
+        return options.operation in ("import", "resume"), True
     if verb in _MUTATING:
         return True, True
     if verb == "backup":
@@ -128,7 +137,7 @@ def _gating(verb: str, rest: List[str]) -> Tuple[bool, bool]:
 _lock_fd: Optional[int] = None  # module-held so the lock lives for the process
 
 
-def _acquire_ctl_lock(settings: Settings) -> None:
+def _acquire_ctl_lock(settings: Settings, *, strict: bool = False) -> None:
     """Serialize MUTATING verbs for one instance. Non-blocking: a second
     concurrent mutating verb fails fast rather than silently queueing.
     Best-effort: if the lock file cannot be opened (EMR_HOME unwritable/
@@ -140,6 +149,8 @@ def _acquire_ctl_lock(settings: Settings) -> None:
     # CREATED as a side effect of any mutating verb. The playbook creates the
     # home; a missing one is an operator error to surface, not to paper over.
     if not settings.emr_home.is_dir():
+        if strict:
+            raise CdsCommandError("CDS_CONFIGURATION: instance home is unavailable", 2)
         from .util import warn
 
         warn(f"{settings.emr_home} does not exist — the per-instance mutating lock "
@@ -149,6 +160,9 @@ def _acquire_ctl_lock(settings: Settings) -> None:
     try:
         _lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError as e:
+        if strict:
+            raise CdsCommandError(
+                "CDS_CONFIGURATION: cannot acquire the deployment lock", 2) from None
         from .util import warn
 
         warn(f"could not open the mutating-verb lock {lock_path} ({e}) — proceeding "
@@ -157,6 +171,9 @@ def _acquire_ctl_lock(settings: Settings) -> None:
     try:
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        if strict:
+            raise CdsCommandError(
+                "CDS_BUSY: another instance deployment/import operation is running", 4) from None
         raise CtlError(
             f"another carlos-ctl mutating operation is already running for this instance "
             f"(lock {lock_path}) — wait for it to finish and retry"
@@ -189,6 +206,10 @@ def _dispatch(verb: str, args: List[str], runner: Runner) -> int:
             f"'carlos-ctl {verb}' takes no arguments (got: {' '.join(args)}) — "
             f"behavior knobs for it are environment variables; see the README"
         )
+    if verb == "cds-import":
+        from . import cdsimport
+
+        return cdsimport.cmd_cds_import(runner, args)
     if verb == "status":
         return lifecycle.cmd_status(runner)
     if verb == "logs":
@@ -331,11 +352,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         if show_banner:
             _target_banner(settings)
         if take_lock:
-            _acquire_ctl_lock(settings)
+            if verb == "cds-import":
+                _acquire_ctl_lock(settings, strict=True)
+            else:
+                _acquire_ctl_lock(settings)
         return _dispatch(verb, rest, runner)
+    except CdsCommandError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return e.code
     except CtlError as e:
         print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+        return 2 if verb == "cds-import" else 1
     except KeyboardInterrupt:
         return 130
     except Exception as e:  # noqa: BLE001 — top-level guard, not silent

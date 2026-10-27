@@ -19,8 +19,12 @@ method.
 from __future__ import annotations
 
 import os
+import selectors
+import signal
 import subprocess
-from typing import IO, List, Mapping, Optional, Sequence, Union
+import time
+from types import FrameType
+from typing import IO, Any, Dict, List, Mapping, Optional, Sequence, Union
 
 from .config import Settings
 from .util import CtlError
@@ -68,6 +72,8 @@ class Runner:
         env: Optional[Mapping[str, str]] = None,
         quiet: bool = False,
         timeout: Optional[float] = None,
+        capture_limit: Optional[int] = None,
+        supervise: bool = False,
     ) -> subprocess.CompletedProcess:
         """One chokepoint for every external command. `env` entries are ADDED
         to the inherited environment (the off-argv secret channel); passing a
@@ -87,6 +93,23 @@ class Runner:
         if env:
             full_env = dict(os.environ)
             full_env.update(env)
+        if capture_limit is not None:
+            if not capture or input_text is not None or stdin is not None or stdout is not None \
+                    or timeout is None or timeout <= 0 or capture_limit <= 0:
+                raise CtlError("bounded capture requires explicit capture, limit and deadline")
+            bounded = self._bounded(argv, full_env, capture_limit, timeout)
+            if check and bounded.returncode != 0:
+                raise CtlError("bounded protocol command failed")
+            return bounded
+        if supervise:
+            if capture or quiet or stdout is not None or stdin is not None or timeout is not None:
+                raise CtlError("supervised streams cannot capture output or inherit a timeout")
+            if input_text is not None and len(input_text.encode("utf-8")) > 4096:
+                raise CtlError("supervised control input exceeded its protocol limit")
+            supervised = self._supervised(argv, full_env, input_text)
+            if check and supervised.returncode != 0:
+                raise CtlError("supervised command failed")
+            return supervised
         try:
             return subprocess.run(  # noqa: S603
                 list(argv),
@@ -106,6 +129,135 @@ class Runner:
                     f"command timed out after {timeout}s: {argv[0]}"
                 ) from e
             return subprocess.CompletedProcess(list(argv), 124, stdout="", stderr="timed out")
+
+    @staticmethod
+    def _stop_group(process: subprocess.Popen[Any]) -> None:
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, signum)
+            except ProcessLookupError:
+                # The owned group has already exited; still reap the child.
+                break
+            if signum == signal.SIGTERM:
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # Escalate below; no further work may run in this group.
+                    pass
+        process.wait(timeout=2)
+
+    def _bounded(
+        self, argv: Sequence[str], env: Optional[Mapping[str, str]], limit: int, timeout: float,
+    ) -> subprocess.CompletedProcess:
+        """Bound both pipes and time for protocol probes, not import output."""
+        process = subprocess.Popen(
+            list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env, cwd=_CROSS_USER_CWD if _crosses_user_boundary(argv) else None,
+            start_new_session=True,
+        )
+        data = {"stdout": bytearray(), "stderr": bytearray()}
+        deadline = time.monotonic() + timeout
+        try:
+            with selectors.DefaultSelector() as selector:
+                for name in data:
+                    selector.register(getattr(process, name), selectors.EVENT_READ, name)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return subprocess.CompletedProcess(list(argv), 124, "", "timed out")
+                    for key, _ in selector.select(remaining):
+                        chunk = os.read(key.fd, 8192)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        if len(data[key.data]) + len(chunk) > limit:
+                            return subprocess.CompletedProcess(
+                                list(argv), 125, "", "protocol limit")
+                        data[key.data].extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return subprocess.CompletedProcess(list(argv), 124, "", "timed out")
+            rc = process.wait(timeout=remaining)
+            try:
+                out = data["stdout"].decode("utf-8")
+                err = data["stderr"].decode("utf-8")
+            except UnicodeError:
+                return subprocess.CompletedProcess(list(argv), 125, "", "invalid protocol encoding")
+            return subprocess.CompletedProcess(list(argv), rc, out, err)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(list(argv), 124, "", "timed out")
+        finally:
+            self._stop_group(process)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+
+    def _supervised(
+        self, argv: Sequence[str], env: Optional[Mapping[str, str]], input_text: Optional[str],
+    ) -> subprocess.CompletedProcess:
+        """Relay signals while streaming long-running output without capture."""
+        process: Optional[subprocess.Popen[str]] = None
+        requested: Optional[int] = None
+        old_handlers: Dict[int, Any] = {}
+
+        def forward(signum: int, frame: Optional[FrameType]) -> None:
+            nonlocal requested
+            repeat = requested is not None
+            requested = signum
+            if process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL if repeat else signum)
+                except ProcessLookupError:
+                    # Completion raced the signal; durable engine state remains authoritative.
+                    pass
+
+        try:
+            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+                old_handlers[signum] = signal.signal(signum, forward)
+            if requested is not None:
+                return subprocess.CompletedProcess(list(argv), 128 + requested)
+            process = subprocess.Popen(
+                list(argv), stdin=subprocess.PIPE if input_text is not None else None,
+                text=True, encoding="utf-8", env=env,
+                cwd=_CROSS_USER_CWD if _crosses_user_boundary(argv) else None,
+                start_new_session=True,
+            )
+            if requested is not None:
+                try:
+                    os.killpg(process.pid, requested)
+                except ProcessLookupError:
+                    # The child completed during cancellation admission.
+                    pass
+            broken_input = False
+            if input_text is not None:
+                if process.stdin is None:
+                    raise CtlError("supervised control pipe was not created")
+                try:
+                    process.stdin.write(input_text)
+                    process.stdin.close()
+                except BrokenPipeError:
+                    broken_input = True
+            rc = process.wait()
+            rc = 128 - rc if rc < 0 else rc
+            if rc == 0 and broken_input:
+                rc = 2
+            if rc == 0 and requested is not None:
+                rc = 128 + requested
+            return subprocess.CompletedProcess(list(argv), rc)
+        finally:
+            try:
+                if process is not None:
+                    if process.stdin is not None and not process.stdin.closed:
+                        try:
+                            process.stdin.close()
+                        except BrokenPipeError:
+                            # A child refusal can close the bounded metadata pipe first.
+                            pass
+                    if process.poll() is None:
+                        self._stop_group(process)
+            finally:
+                for cleanup_signum, old_handler in old_handlers.items():
+                    signal.signal(cleanup_signum, old_handler)
 
     def ok(self, argv: Sequence[str], **kw: object) -> bool:
         """Command succeeded? (bash `if cmd; then`) — output suppressed."""
