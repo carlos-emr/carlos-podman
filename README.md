@@ -1020,7 +1020,7 @@ it never applies an implicit migration. The clinical normalization timezone is
 the instance's `carlos_tz`. Review the approved source profiles/namespace and
 explicit OS-operator/provider delegation in `carlos.properties` before clinical
 execution. Stop ordinary application/ingestion writers according to the CARLOS
-maintenance runbook. Root access or selecting a provider number alone is insufficient.
+maintenance runbook. Root access or selecting a provider key alone is insufficient.
 The command's first step is a bounded, side-effect-free engine capability probe.
 
 The provisioned host layout is:

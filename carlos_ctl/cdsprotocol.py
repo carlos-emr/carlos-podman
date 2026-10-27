@@ -59,6 +59,12 @@ def _number(value: str) -> str:
     return value
 
 
+def _provider(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,16}", value, flags=re.ASCII):
+        raise argparse.ArgumentTypeError("invalid provider key")
+    return value
+
+
 def _shift(value: str) -> int:
     if not re.fullmatch(r"-?[0-9]{1,10}", value, flags=re.ASCII):
         raise argparse.ArgumentTypeError("invalid shift")
@@ -83,7 +89,7 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--input", action=_Once, metavar="PATH",
                     help="source XML, ZIP or directory within the configured allowed root")
-    ap.add_argument("--provider", action=_Once, type=_number, required=True, metavar="NUMBER",
+    ap.add_argument("--provider", action=_Once, type=_provider, required=True, metavar="ID",
                     help="active CARLOS provider approved for this operator's delegation")
     ap.add_argument("--program", action=_Once, type=_number, metavar="ID")
     ap.add_argument("--facility", action=_Once, type=_number, metavar="ID")

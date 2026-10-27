@@ -13,6 +13,13 @@ from carlos_ctl import cdsimport, cdsprotocol, cli
 from carlos_ctl.backup import BackupContext
 from carlos_ctl.util import CtlError
 
+
+@pytest.mark.parametrize("provider", ["T099", "T002", "007", "test-provider_1"])
+def test_framework_provider_keys_are_literal_strings(provider: str) -> None:
+    args = cdsprotocol.parse_args(["--status", "run-1", "--provider", provider])
+    assert cdsprotocol.engine_arguments(args) == [
+        "--operation", "status", "--provider", provider, "--run", "run-1"]
+
 CAPS = {"protocol": 1, "java": 25, "cliHeapMiB": 512,
         "operations": ["import", "status", "resume", "cancel", "report"]}
 IMAGE = "sha256:" + "a" * 64
